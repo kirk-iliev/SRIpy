@@ -29,4 +29,7 @@ class ExperimentData:
     # Processed data
     profile_1d: np.ndarray = None
     visibility: float = None
+    sigma_microns: float = None
     
+    def is_valid(self):
+        return self.raw_image is not None and self.raw_image.max() > 0

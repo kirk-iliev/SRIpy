@@ -1,35 +1,107 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, asdict, field
 import numpy as np
-import time
+import json
+import os
+import scipy.io
+from datetime import datetime
+
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
 
 @dataclass
-class ExperimentSettings:
-    """Settings for experimental setup."""
-
-    # Cam settings
-    shutter_time_s: float = 0.001 # 1ms default
+class ExperimentMetadata:
+    exposure_s: float = 0.005
     gain_db: float = 0.0
-    roi_x: int = 0
-    roi_y: int = 0
-    roi_width: int = 1024
-    roi_height: int = 768
-
-    # Physical settings
-    slit_separation_m: float = 0.05
-    wavelength_m: float = 550e-9
-    distance_L_m: float = 16.5
-    pixel_scale_um: float = 3.75
+    wavelength_nm: float = 550.0
+    slit_separation_mm: float = 50.0
+    distance_m: float = 16.5
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 @dataclass
-class ExperimentData: 
+class ExperimentResult:
+    visibility: float = 0.0
+    sigma_microns: float = 0.0
+    lineout_x: list = field(default_factory=list)
+    lineout_y: list = field(default_factory=list)
+    fit_y: list = field(default_factory=list)
+    is_saturated: bool = False
 
-    raw_image: np.ndarray = field(default_factory=lambda: np.zeros((100, 100)))
-    timestamp: float = field(default_factory=time.time)
-
-    # Processed data
-    profile_1d: np.ndarray = None
-    visibility: float = None
-    sigma_microns: float = None
+@dataclass
+class BurstResult:
+    """Stores statistics from a multi-frame acquisition."""
+    n_frames: int = 0
+    mean_visibility: float = 0.0
+    std_visibility: float = 0.0
+    mean_sigma: float = 0.0
+    std_sigma: float = 0.0
     
-    def is_valid(self):
-        return self.raw_image is not None and self.raw_image.max() > 0
+    # History Arrays
+    vis_history: list = field(default_factory=list)
+    sigma_history: list = field(default_factory=list)
+    timestamps: list = field(default_factory=list)
+    
+    # This allows you to 'replay' the burst later
+    lineout_history: list = field(default_factory=list)
+
+class DataManager:
+    @staticmethod
+    def save_dataset(directory, filename_prefix, raw_image, metadata: ExperimentMetadata, result: ExperimentResult):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        full_name = f"{filename_prefix}_{timestamp}"
+        save_path = os.path.join(directory, full_name)
+        
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+            
+        np.save(os.path.join(save_path, "raw_image.npy"), raw_image)
+        
+        data_dict = {
+            "metadata": asdict(metadata),
+            "results": asdict(result)
+        }
+        
+        json_path = os.path.join(save_path, "experiment_data.json")
+        with open(json_path, 'w') as f:
+            json.dump(data_dict, f, cls=NumpyEncoder, indent=4)
+            
+        return save_path
+
+    @staticmethod
+    def save_matlab(directory, filename_prefix, raw_image, metadata: ExperimentMetadata, result: ExperimentResult):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{filename_prefix}_{timestamp}.mat"
+        save_path = os.path.join(directory, filename)
+        
+        mat_dict = {
+            "IMG": {
+                "raw": raw_image,
+                "lineout": np.array(result.lineout_y),
+                "fit_curve": np.array(result.fit_y),
+                "visibility": result.visibility,
+                "sigma_microns": result.sigma_microns,
+                "saturated": result.is_saturated
+            },
+            "META": asdict(metadata)
+        }
+        
+        scipy.io.savemat(save_path, mat_dict)
+        return save_path
+
+    @staticmethod
+    def save_burst(directory, filename_prefix, burst_result: BurstResult, metadata: ExperimentMetadata):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{filename_prefix}_BURST_{timestamp}.json"
+        save_path = os.path.join(directory, filename)
+        
+        data_dict = {
+            "metadata": asdict(metadata),
+            "burst_data": asdict(burst_result)
+        }
+        
+        with open(save_path, 'w') as f:
+            json.dump(data_dict, f, cls=NumpyEncoder, indent=4)
+        return save_path

@@ -1,154 +1,243 @@
+import logging
+import queue
 import numpy as np
+from typing import Optional
 from vmbpy import *
-from .camera_interface import CameraInterface
 
-class MantaDriver(CameraInterface):
-    def __init__(self, camera_id=None):
+class MantaDriver: 
+
+    def __init__(self, camera_id: Optional[str] = None):
         self.camera_id = camera_id
-        self.vmb = None
-        self.cam = None
+        self._vmb: Optional[VmbSystem] = None
+        self._cam: Optional[Camera] = None
+        self._feat_trigger_software = None
+        
+        # Streaming State
+        self._is_streaming = False
+        self._frame_queue = queue.Queue(maxsize=1)
 
     def connect(self):
-        # Start the Vimba System
-        self.vmb = VmbSystem.get_instance()
-        self.vmb.__enter__()
-        
-        # Find Camera
-        if self.camera_id:
-            try:
-                self.cam = self.vmb.get_camera_by_id(self.camera_id)
-            except VmbCameraError:
-                raise RuntimeError(f"Camera {self.camera_id} not found.")
-        else:
-            cams = self.vmb.get_all_cameras()
-            if not cams:
-                raise RuntimeError("No cameras found via Vimba.")
-            self.cam = cams[0]
+        """Initializes Vimba and connects to the camera."""
+        if self._cam:
+            return
 
-        # Open camera
-        self.cam.__enter__()
-        
-        print(f"Connected to: {self.cam.get_name()} (ID: {self.cam.get_id()})")
-        self._configure_defaults()
-
-    def _get_feature(self, name):
-        """Helper to safely get a feature, returning None if missing."""
         try:
-            return self.cam.get_feature_by_name(name)
-        except VmbFeatureError:
-            return None
+            self._vmb = VmbSystem.get_instance()
+            self._vmb.__enter__()
+
+            if self.camera_id:
+                try:
+                    self._cam = self._vmb.get_camera_by_id(self.camera_id)
+                except VmbCameraError:
+                    raise RuntimeError(f"Camera {self.camera_id} not found.")
+            else:
+                cams = self._vmb.get_all_cameras()
+                if not cams:
+                    raise RuntimeError("No cameras found via Vimba.")
+                self._cam = cams[0]
+
+            self._cam.__enter__()
+            # Setup logging
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+            self.logger = logging.getLogger(__name__)
+            self.logger.info(f"Connected to: {self._cam.get_name()} (ID: {self._cam.get_id()})")
+            
+            self._configure_defaults()
+            
+        except Exception as e:
+            print(f"Connection failed: {e}")
+            self.close()
+            raise
+
+    def close(self):
+        """Safely closes camera and system resources."""
+        self.stop_stream() # Ensure stream is stopped first
+        
+        if self._cam:
+            try:
+                self._cam.__exit__(None, None, None)
+            except Exception as e:
+                print(f"Error closing camera: {e}")
+            self._cam = None
+            
+        if self._vmb:
+            try:
+                self._vmb.__exit__(None, None, None)
+            except Exception as e:
+                print(f"Error closing Vimba system: {e}")
+            self._vmb = None
+        print("Camera connection closed.")
 
     def _configure_defaults(self):
-        """Apply recommended settings for reliable GigE streaming."""
-        # Packet size adjustment 
-        packet_size = self._get_feature("GevSCPSPacketSize")
-        if packet_size:
-            try:
-                packet_size.set(1400)
-            except Exception as e:
-                print(f"Warning: Could not set Packet Size: {e}")
-        else:
-            packet_size = self._get_feature("PacketSize")
-            if packet_size:
-                packet_size.set(1400)
+        """Sets up GigE packet sizes, triggers, and pixel formats."""
+        if not self._cam:
+            return
 
-        # Trigger Mode (Manual Software Trigger)
-        trigger_mode = self._get_feature("TriggerMode")
-        trigger_source = self._get_feature("TriggerSource")
-        
-        if trigger_mode:
-            trigger_mode.set('On')
-            trigger_source.set('Software')
-            print(f"debug: TriggerMode set to {trigger_mode.get()}, TriggerSource set to {trigger_source.get()}")
-        # Pixel Format (Prefer Mono12)
+        # 1. Optimize Packet Size 
+        for feature_name in ["GevSCPSPacketSize", "PacketSize"]:
+            feat = self._get_feature(feature_name)
+            if feat:
+                try:
+                    feat.set(1400) 
+                    break 
+                except VmbFeatureError:
+                    pass
+
+        # 2. Setup Software Triggering
+        try:
+            trigger_mode = self._get_feature("TriggerMode")
+            trigger_source = self._get_feature("TriggerSource")
+            
+            if trigger_mode and trigger_source:
+                trigger_mode.set('On')
+                trigger_source.set('Software')
+                
+            self._feat_trigger_software = self._get_feature("TriggerSoftware")
+            if not self._feat_trigger_software:
+                print("TriggerSoftware feature not found. Acquisition may fail.")
+                
+        except VmbFeatureError as e:
+            print(f"Error configuring trigger: {e}")
+
+        # 3. Pixel Format
         pix_fmt = self._get_feature("PixelFormat")
         if pix_fmt:
-            available = pix_fmt.get_available_entries()
-            if 'Mono12' in available:
-                pix_fmt.set('Mono12')
-            else:
-                pix_fmt.set('Mono8')
+            try:
+                available = pix_fmt.get_available_entries()
+                target_fmt = 'Mono12' if 'Mono12' in available else 'Mono8'
+                pix_fmt.set(target_fmt)
+            except VmbFeatureError:
+                pass
 
-    def set_exposure(self, exposure_time_s: float):
-        # Manta uses microseconds. Clamp to ~40us minimum.
-        exp_us = max(40, exposure_time_s * 1_000_000)
-        
-        # Try finding the correct feature name
-        exposure_feat = self._get_feature("ExposureTimeAbs") # Legacy Manta
-        if not exposure_feat:
-            exposure_feat = self._get_feature("ExposureTime") # GenICam Standard
-            
-        if exposure_feat:
-            exposure_feat.set(exp_us)
-        else:
-            print("Error: Could not find ExposureTime feature.")
+    @property
+    def exposure(self) -> float:
+        """Exposure time in seconds."""
+        feat = self._get_feature("ExposureTimeAbs") or self._get_feature("ExposureTime")
+        if feat:
+            try:
+                return feat.get() / 1_000_000.0
+            except VmbFeatureError:
+                pass
+        return 0.0
 
-    def set_gain(self, gain_db: float):
-        gain_feat = self._get_feature("Gain")
-        if gain_feat:
-            min_g, max_g = gain_feat.get_range()
-            target = max(min_g, min(max_g, gain_db))
-            gain_feat.set(target)
-        else:
-            print("Error: Could not find Gain feature.")
+    @exposure.setter
+    def exposure(self, exposure_time_s: float):
+        feat = self._get_feature("ExposureTimeAbs") or self._get_feature("ExposureTime")
+        if feat:
+            try:
+                min_exp, max_exp = feat.get_range()
+                req_us = exposure_time_s * 1_000_000.0
+                target_us = max(min_exp, min(max_exp, req_us))
+                feat.set(target_us)
+            except VmbFeatureError as e:
+                print(f"Failed to set exposure: {e}")
 
-    def acquire_frame(self) -> np.ndarray:
-        if not self.cam:
-            raise RuntimeError("Camera not connected. Call connect() first.")
+    @property
+    def gain(self) -> float:
+        """Gain in dB."""
+        feat = self._get_feature("Gain")
+        return feat.get() if feat else 0.0
 
-        # Prepare to capture a single frame asynchronously
-        captured_frame = []
-        
-        # Callback function to handle incoming frames
-        def frame_handler(cam, stream, frame):
+    @gain.setter
+    def gain(self, gain_db: float):
+        feat = self._get_feature("Gain")
+        if feat:
+            try:
+                min_g, max_g = feat.get_range()
+                target = max(min_g, min(max_g, gain_db))
+                feat.set(target)
+            except VmbFeatureError as e:
+                print(f"Failed to set gain: {e}")
+
+    def start_stream(self):
+        """Prepares the camera for continuous acquisition."""
+        if self._is_streaming or not self._cam:
+            return
+
+        # Define the handler inside to capture 'self'
+        def frame_handler(cam: Camera, stream: Stream, frame: Frame):
             if frame.get_status() == FrameStatus.Complete:
-                # Convert to numpy array and store
-                captured_frame.append(frame.as_numpy_ndarray())
+                # If queue is full, discard oldest frame to reduce latency
+                if self._frame_queue.full():
+                    try: self._frame_queue.get_nowait()
+                    except queue.Empty: pass
+                
+                self._frame_queue.put(frame.as_numpy_ndarray().copy())
             
-            # Re-queue the frame for future use
             cam.queue_frame(frame)
 
         try:
-            # start streaming
-            self.cam.start_streaming(handler=frame_handler, buffer_count=3)
-            
-            # fire trigger if listening
-            trigger_soft = self._get_feature("TriggerSoftware")
-            if trigger_soft:
-                trigger_soft.run()
-            else:
-                print("Warning: TriggerSoftware feature not found.")
-            
-            # wait for image
-            import time
-            timeout = 3.0
-            start_time = time.time()
-            
-            while not captured_frame:
-                if time.time() - start_time > timeout:
-                    print("Error: Timeout waiting for frame (Async).")
-                    break
-                time.sleep(0.01) # Check every 10ms
-            
-            # stop listening
-            self.cam.stop_streaming()
-            
-            if captured_frame:
-                return captured_frame[0]
-            else:
-                return np.zeros((10, 10))
-
+            # Start streaming with 5 buffers to prevent dropped frames
+            self._cam.start_streaming(handler=frame_handler, buffer_count=5)
+            self._is_streaming = True
+            print("Continuous streaming started.")
         except Exception as e:
-            print(f"Error acquiring frame: {e}")
-            try:
-                self.cam.stop_streaming()
-            except:
-                pass
-            return np.zeros((10, 10))
+            print(f"Failed to start stream: {e}")
 
-    def close(self):
-        if self.cam:
-            self.cam.__exit__(None, None, None)
-        if self.vmb:
-            self.vmb.__exit__(None, None, None)
-        print("Camera Connection Closed.")
+    def stop_stream(self):
+        """Stops continuous acquisition."""
+        if not self._is_streaming or not self._cam:
+            return
+        
+        try:
+            self._cam.stop_streaming()
+            self._is_streaming = False
+            
+            # Clear the queue
+            with self._frame_queue.mutex:
+                self._frame_queue.queue.clear()
+            print("Continuous streaming stopped.")
+        except Exception as e:
+            print(f"Failed to stop stream: {e}")
+
+    def acquire_frame(self, timeout: float = 3.0) -> Optional[np.ndarray]:
+        """
+        Acquires a single frame. 
+        If start_stream() was called, pulls from the live queue.
+        If not, performs a one-off capture (snapshot mode).
+        Returns None on timeout/error.
+        """
+        if not self._cam:
+            raise RuntimeError("Camera not connected.")
+
+        # --- MODE A: Streaming (Fast/Live) ---
+        if self._is_streaming:
+            try:
+                # 1. Fire Software Trigger
+                if self._feat_trigger_software:
+                    self._feat_trigger_software.run()
+                
+                # 2. Wait for result in queue
+                return self._frame_queue.get(block=True, timeout=timeout)
+            except queue.Empty:
+                print("Acquire timeout (Streaming)")
+                return None
+
+        # --- MODE B: Snapshot (Slow/Safe) ---
+        else:
+            return self._acquire_single_snapshot(timeout)
+
+    def _acquire_single_snapshot(self, timeout):
+        """Legacy helper for one-off snapshots."""
+        q = queue.Queue(maxsize=1)
+        
+        def handler(cam, stream, frame):
+            if frame.get_status() == FrameStatus.Complete:
+                q.put(frame.as_numpy_ndarray().copy())
+            cam.queue_frame(frame)
+
+        try:
+            self._cam.start_streaming(handler=handler, buffer_count=1)
+            if self._feat_trigger_software:
+                self._feat_trigger_software.run()
+            return q.get(block=True, timeout=timeout)
+        except Exception:
+            return None
+        finally:
+            try: self._cam.stop_streaming()
+            except: pass
+
+    def _get_feature(self, name: str):
+        if not self._cam: return None
+        try: return self._cam.get_feature_by_name(name)
+        except VmbFeatureError: return None

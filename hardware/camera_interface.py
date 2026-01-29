@@ -9,22 +9,37 @@ class CameraInterface(ABC):
         """Initialize camera connection"""
         pass
 
+    @property
     @abstractmethod
-    def set_exposure(self, exposure_time_s: float):
-        """Set camera exposure time in seconds"""
+    def exposure(self) -> float:
+        """Get camera exposure time in seconds"""
         pass
 
+    @exposure.setter
     @abstractmethod
-    def set_gain(self, gain_db: float):
+    def exposure(self, exposure_time_s: float):
+        """Set camera exposure time in seconds"""
+        pass
+    @property
+    @abstractmethod
+    def gain(self) -> float:
+        """Get camera gain in decibels"""
+        pass
+
+    @gain.setter
+    @abstractmethod
+    def gain(self, gain_db: float):
         """Set camera gain in decibels"""
         pass
 
+    @property
     @abstractmethod
     def acquire_frame(self) -> np.ndarray:
         """Acquire a single frame from the camera
         Returns: 2D numpy array"""
         pass
 
+    
     @abstractmethod
     def close(self):
         """Close camera connection and release resources safely"""

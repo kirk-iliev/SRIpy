@@ -83,7 +83,7 @@ class MantaDriver:
                 except VmbFeatureError:
                     pass
 
-        # 2. Setup Software Triggering
+        # Setup Software Triggering
         try:
             trigger_mode = self._get_feature("TriggerMode")
             trigger_source = self._get_feature("TriggerSource")
@@ -99,7 +99,7 @@ class MantaDriver:
         except VmbFeatureError as e:
             print(f"Error configuring trigger: {e}")
 
-        # 3. Pixel Format
+        # Pixel Format
         pix_fmt = self._get_feature("PixelFormat")
         if pix_fmt:
             try:
@@ -203,11 +203,11 @@ class MantaDriver:
         # --- MODE A: Streaming (Fast/Live) ---
         if self._is_streaming:
             try:
-                # 1. Fire Software Trigger
+                # Fire Software Trigger
                 if self._feat_trigger_software:
                     self._feat_trigger_software.run()
                 
-                # 2. Wait for result in queue
+                # Wait for result in queue
                 return self._frame_queue.get(block=True, timeout=timeout)
             except queue.Empty:
                 print("Acquire timeout (Streaming)")
@@ -221,7 +221,7 @@ class MantaDriver:
         """Legacy helper for one-off snapshots."""
         q = queue.Queue(maxsize=1)
         
-        def handler(cam, stream, frame):
+        def handler(cam, frame):
             if frame.get_status() == FrameStatus.Complete:
                 q.put(frame.as_numpy_ndarray().copy())
             cam.queue_frame(frame)

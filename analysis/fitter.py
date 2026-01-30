@@ -49,19 +49,20 @@ class InterferenceFitter:
         return baseline + sinc_sq * interf
 
     def fit(self, lineout: np.ndarray) -> FitResult:
-        # 1. Sanitize Input
+        # Sanitize Input
         y = np.nan_to_num(lineout.astype(float))
         x = np.arange(len(y))
         
-        # If signal is too weak (read-noise only), fail early.
+        # Fail early if signal is dead (read noise only)
         if (np.max(y) - np.min(y)) < 50:
              return FitResult(success=False, message="Low Signal")
         
-        # --- 1. Gaussian Estimate (Center) ---
+        # --- Gaussian Estimate (Find Center) ---
         peak_idx = np.argmax(y)
         peak_val = y[peak_idx]
         min_val = np.min(y)
         
+        # Rough width estimate
         half_max = (peak_val + min_val) / 2
         above_half = np.where(y > half_max)[0]
         if len(above_half) > 1:
@@ -71,79 +72,76 @@ class InterferenceFitter:
             
         p0_gauss = [min_val, peak_val - min_val, peak_idx, est_width]
         
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+        try:
+            # We constrain width > 0 to prevent flip errors
+            # Bounds: [base, amp, center, width]
+            bounds_g_min = [-np.inf, 0, 0, 0.1]
+            bounds_g_max = [np.inf, np.inf, len(y), len(y)]
             
-            try:
-                popt_g, _ = curve_fit(self._gaussian, x, y, p0=p0_gauss, maxfev=2000)
-                if not np.all(np.isfinite(popt_g)): raise ValueError("Gaussian Fit NaN")
-                
-                center_guess = popt_g[2]
-                width_guess = abs(popt_g[3])
-                if width_guess < 1 or width_guess > len(y): center_guess = peak_idx
-                
-            except Exception:
-                center_guess = peak_idx
-                popt_g = p0_gauss 
-                
-            # --- 2. Sinc Estimate (Envelope) ---
-            safe_width = abs(popt_g[3]) if abs(popt_g[3]) > 1e-5 else 50.0
-            p0_sinc = [min_val, (peak_val - min_val), 2.0 / safe_width, center_guess]
+            popt_g, _ = curve_fit(self._gaussian, x, y, p0=p0_gauss, 
+                                  bounds=(bounds_g_min, bounds_g_max), maxfev=1000)
+            center_guess = popt_g[2]
+        except:
+            center_guess = peak_idx
+
+        # FFT (Find Frequency) 
+        # MATLAB does this: ilo=10; ihi=min(200, length(s)); ffts=abs(fft(s));
+        try:
+            y_centered = y - np.mean(y)
+            # Windowing helps reduce edge artifacts in FFT
+            window = np.hanning(len(y))
+            yf = np.fft.rfft(y_centered * window)
+            xf = np.fft.rfftfreq(len(y))
             
-            try:
-                popt_s, _ = curve_fit(self._sinc_sq_envelope, x, y, p0=p0_sinc, maxfev=2000)
-                if not np.all(np.isfinite(popt_s)): raise ValueError("Sinc Fit NaN")
-                est_base, est_amp, est_sinc_w, est_sinc_x0 = popt_s
-            except Exception:
-                est_base, est_amp = min_val, peak_val - min_val
-                est_sinc_w = 2.0 / 50.0 
-                est_sinc_x0 = center_guess
-                popt_s = [est_base, est_amp, est_sinc_w, est_sinc_x0]
-
-            # --- 3. FFT (Freq) ---
-            try:
-                y_centered = y - np.mean(y)
-                window = np.hanning(len(y))
-                yf = np.fft.fft(y_centered * window)
-                xf = np.fft.fftfreq(len(y))
-                pos_mask = xf > 0
-                fft_mag = np.abs(yf[pos_mask])
-                dominant_idx = np.argmax(fft_mag)
-                est_sine_k = 2 * np.pi * xf[pos_mask][dominant_idx]
-            except Exception:
-                est_sine_k = 0.3
-
-            # --- 4. Full Fit ---
-            p0_final = [est_base, est_amp, est_sinc_w, est_sinc_x0, 0.5, est_sine_k, 0.0]
-            bounds_min = [0, 0, 0, -np.inf, 0.0, 0, -np.pi]
-            bounds_max = [np.inf, np.inf, np.inf, np.inf, 1.0, np.inf, np.pi]
+            # Ignore DC component and very low freq
+            fft_mag = np.abs(yf)
+            fft_mag[0:5] = 0 
             
-            try:
-                popt, _ = curve_fit(
-                    self._full_interference_model, x, y, 
-                    p0=p0_final, bounds=(bounds_min, bounds_max), maxfev=5000
-                )
-                
-                if not np.all(np.isfinite(popt)): raise ValueError("Final Fit NaN")
+            dominant_idx = np.argmax(fft_mag)
+            est_freq = xf[dominant_idx]
+            est_sine_k = 2 * np.pi * est_freq
+        except:
+            est_sine_k = 0.3 # Fallback
 
-                vis = popt[4]
-                sigma = self.calculate_sigma(vis)
+        # Params: [baseline, amp, sinc_w, sinc_x0, visibility, sine_k, sine_phase]
+        
+        # Initial Guesses
+        est_base = min_val
+        est_amp = peak_val - min_val
+        est_sinc_w = 2.0 / (est_width * 2) # Sinc width is roughly related to Gaussian width
+        
+        p0_final = [est_base, est_amp, est_sinc_w, center_guess, 0.5, est_sine_k, 0.0]
+        
+        # 1. Visibility must be [0, 1]
+        # 2. Sinc width must be positive
+        # 3. Frequency (sine_k) constrained to +/- 20% of FFT estimate to prevent locking on noise
+        freq_tol = 0.2 * est_sine_k
+        k_min = max(0, est_sine_k - freq_tol)
+        k_max = est_sine_k + freq_tol
+        
+        bounds_min = [-np.inf, 0, 0, 0, 0.0, k_min, -np.pi]
+        bounds_max = [np.inf, np.inf, 1.0, len(y), 1.0, k_max, np.pi]
+        
+        try:
+            popt, _ = curve_fit(
+                self._full_interference_model, x, y, 
+                p0=p0_final, bounds=(bounds_min, bounds_max), maxfev=5000
+            )
+            
+            vis = popt[4]
+            sigma = self.calculate_sigma(vis)
+            
+            return FitResult(
+                success=True,
+                visibility=vis,
+                sigma_microns=sigma * 1e6, # Convert to microns for display
+                fitted_curve=self._full_interference_model(x, *popt),
+                params={'baseline': popt[0], 'amplitude': popt[1], 'vis': vis}
+            )
+            
+        except Exception as e:
+            return FitResult(success=False, message=f"Fit Failed: {str(e)}")
                 
-                return FitResult(
-                    success=True,
-                    visibility=vis,
-                    sigma_microns=sigma * 1e6,
-                    fitted_curve=self._full_interference_model(x, *popt),
-                    params={'baseline': popt[0], 'amplitude': popt[1], 'vis': vis}
-                )
-                
-            except Exception as e:
-                # If fitting fails (noise, occlusion, etc), simply report failure.
-                # The GUI will clear the plot, avoiding the "jumping red line" effect.
-                return FitResult(
-                    success=False, 
-                    message=f"Fit Failed: {str(e)}"
-                )
 
     def calculate_sigma(self, visibility: float) -> float:
         if visibility <= 0.001 or visibility >= 0.999:

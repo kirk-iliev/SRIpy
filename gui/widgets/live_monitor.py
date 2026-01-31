@@ -51,7 +51,8 @@ class LiveMonitorWidget(QWidget):
         self.roi_changed.emit()
 
     def update_image(self, img_data):
-        self.image_item.setImage(img_data, autoLevels=False, levels=(0, 4095))
+        #self.image_item.setImage(img_data, autoLevels=False, levels=(0, 4095))
+        self.image_item.setImage(img_data, autoLevels=True)
 
     def update_lineout(self, x_data, y_data):
         self.curve_raw.setData(y_data)

@@ -200,7 +200,7 @@ class MantaDriver:
         if not self._cam:
             raise RuntimeError("Camera not connected.")
 
-        # --- MODE A: Streaming (Fast/Live) ---
+        # --- MODE A: Streaming ---
         if self._is_streaming:
             try:
                 # Fire Software Trigger
@@ -213,7 +213,7 @@ class MantaDriver:
                 print("Acquire timeout (Streaming)")
                 return None
 
-        # --- MODE B: Snapshot (Slow/Safe) ---
+        # --- MODE B: Snapshot ---
         else:
             return self._acquire_single_snapshot(timeout)
 
@@ -221,7 +221,7 @@ class MantaDriver:
         """Legacy helper for one-off snapshots."""
         q = queue.Queue(maxsize=1)
         
-        def handler(cam, frame):
+        def handler(cam, stream, frame):
             if frame.get_status() == FrameStatus.Complete:
                 q.put(frame.as_numpy_ndarray().copy())
             cam.queue_frame(frame)

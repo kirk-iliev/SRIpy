@@ -7,13 +7,13 @@
     "physics": {
         "wavelength_nm": 550.0,
         "slit_separation_mm": 50.0,
-        "distance_m": 16.5
+        "distance_m": 0.3
     },
     "roi": {
         "rows_min": 304.0,
         "rows_max": 912.0,
-        "fit_width_min": 412.0,
-        "fit_width_max": 1380.0,
+        "fit_width_min": 499.0,
+        "fit_width_max": 1467.0,
         "auto_center": true
     }
 }

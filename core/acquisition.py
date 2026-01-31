@@ -1,7 +1,7 @@
-from PyQt6.QtCore import QObject, pyqtSignal
-import numpy as np
-from core.data_model import BurstResult
 import time
+import numpy as np
+from PyQt6.QtCore import QObject, pyqtSignal
+from core.data_model import BurstResult
 
 class BurstWorker(QObject):
     progress = pyqtSignal(int)
@@ -14,7 +14,7 @@ class BurstWorker(QObject):
         self.fitter = fitter
         self.n_frames = n_frames
         self.roi_slice = roi_slice
-        self.roi_x_map = roi_x_map 
+        self.roi_x_map = roi_x_map
         self.transpose = transpose
         self.background = background
 
@@ -25,45 +25,58 @@ class BurstWorker(QObject):
             timestamps = []
             lineout_list = [] 
             
-            # Ensure fresh stream start
-            self.driver.stop_stream()
-            self.driver.start_stream()
-            
+            # 1. OPTIMIZATION: Start stream ONCE before the loop
+            # Ensure any previous stream is cleared
+            try:
+                self.driver.stop_stream()
+                time.sleep(0.1) # Brief pause to let buffers clear
+                self.driver.start_stream()
+                time.sleep(0.1) # Allow stream to spin up
+            except Exception as e:
+                print(f"Burst stream init warning: {e}")
+
             for i in range(self.n_frames):
-                # Timeout must be generous to prevent race conditions
-                img = self.driver.acquire_frame(timeout=2.0)
+                # 2. Use a reasonable timeout. 
+                # If the camera runs at 30fps, a frame takes ~33ms. 
+                # 2.0s is safe, but we should expect return almost instantly.
+                img = self.driver.acquire_frame(timeout=1.0)
+                
                 if img is None: 
+                    # If we time out, don't crash, just try again or skip
+                    print(f"Frame {i} dropped (timeout)")
                     continue
 
+                # --- Fast Pre-processing ---
                 img = img.squeeze().astype(np.float32)
                 
-                # Must match update_frame logic exactly
                 if self.background is not None and img.shape == self.background.shape:
                     img = img - self.background
                     img[img < 0] = 0
                 
                 if self.transpose:
                     img = img.T
+
+                # --- Slicing ---
                 if self.roi_slice:
                     lineout = self.fitter.get_lineout(img, self.roi_slice)
                 else:
                     lineout = self.fitter.get_lineout(img)
                 
-                if self.roi_x_map is not None:
+                # Apply X-ROI (Width)
+                if self.roi_x_map:
                     x_min, x_max = self.roi_x_map
-                    # Safety clamp
                     x_min = max(0, int(x_min))
                     x_max = min(len(lineout), int(x_max))
-                    if x_max > x_min:
-                        y_fit_data = lineout[x_min:x_max]
-                    else:
-                        y_fit_data = lineout
+                    y_fit_data = lineout[x_min:x_max] if x_max > x_min else lineout
                 else:
                     y_fit_data = lineout
 
-                # Store result
-                lineout_list.append(y_fit_data) 
+                # Store for history
+                lineout_list.append(np.nan_to_num(y_fit_data)) 
                 
+                # --- Fitting ---
+                # This is the CPU bottleneck. 
+                # If this takes >30ms, it will slow down acquisition.
                 res = self.fitter.fit(y_fit_data)
                 
                 if res.success:
@@ -76,22 +89,25 @@ class BurstWorker(QObject):
                 timestamps.append(time.time())
                 self.progress.emit(i + 1)
                 
+            # 3. Cleanup
+            self.driver.stop_stream()
+            
+            # 4. Compile Results
             burst_res = BurstResult(
                 n_frames = self.n_frames,
-                mean_visibility = float(np.mean(vis_list)),
-                std_visibility = float(np.std(vis_list)),
-                mean_sigma = float(np.mean(sigma_list)),
-                std_sigma = float(np.std(sigma_list)),
+                mean_visibility = float(np.mean(vis_list)) if vis_list else 0.0,
+                std_visibility = float(np.std(vis_list)) if vis_list else 0.0,
+                mean_sigma = float(np.mean(sigma_list)) if sigma_list else 0.0,
+                std_sigma = float(np.std(sigma_list)) if sigma_list else 0.0,
                 vis_history = vis_list,
                 sigma_history = sigma_list,
                 timestamps = timestamps,
                 lineout_history = lineout_list 
             )
-            
             self.finished.emit(burst_res)
 
         except Exception as e:
             self.error.emit(str(e))
-        finally:
-            # Clean up stream so Live View can take over later
-            self.driver.stop_stream()
+            # Ensure we don't leave the camera hanging
+            try: self.driver.stop_stream()
+            except: pass

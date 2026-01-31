@@ -195,36 +195,54 @@ class InterferometerGUI(QMainWindow):
             self.live_widget.update_fit([], [])
 
     def acquire_background(self):
-        """Pauses stream, grabs a frame, saves as background."""
+        """Pauses stream safely, grabs a frame, saves as background, then restarts."""
+        was_live = self.cam_worker._is_running # Check flag before we stop it
+
         try:
-            was_live = self.cam_worker._is_running
             if was_live:
-                self.controls.btn_live.setChecked(False) # Visual only
-                self.cam_worker.stop_acquire()
-                QThread.msleep(100) # Wait for thread loop to break
+                self.controls.btn_live.setChecked(False) # Update UI
+                self.cam_worker.stop_acquire()           # Tell loop to break
+                
+                self.cam_thread.quit()
+                
+                # Wait up to 2 seconds for it to fully release the driver
+                if not self.cam_thread.wait(2000):
+                    print("Warning: Camera thread stuck. Forcing termination...")
+                    self.cam_thread.terminate()
+                    self.cam_thread.wait()
+
+            self.driver.stop_stream() 
             
             raw = self.driver.acquire_frame(timeout=2.0)
+            
             if raw is not None:
                 self.background_frame = raw.squeeze().astype(np.float32)
                 self.controls.chk_bg.setEnabled(True)
                 self.controls.chk_bg.setChecked(True)
                 self.controls.chk_bg.setText("Subtract Background (Active)")
-            
-            if was_live:
-                self.controls.btn_live.setChecked(True)
-                self.toggle_live_view(True) # Restart thread
-                
+            else:
+                QMessageBox.warning(self, "Warning", "Failed to capture background frame.")
+
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Background failed: {e}")
+            QMessageBox.critical(self, "Error", f"Background acquisition failed: {e}")
+
+        finally:
+            if was_live:
+                self.cam_thread.start() 
+                
+                self.controls.btn_live.setChecked(True)
+                # self.toggle_live_view(True)
 
     def start_burst_acquisition(self):
-        # Stop Live View First
         if self.cam_worker._is_running:
             self.controls.btn_live.setChecked(False)
             self.cam_worker.stop_acquire()
-            QThread.msleep(200)
+            
+            if not self.cam_thread.wait(1000):
+                print("Warning: Camera thread did not stop cleanly. Forcing...")
+            
+            self.cam_thread.start() 
         
-        # Gather ROI/Config
         y_min, y_max = map(int, self.live_widget.get_roi_rows())
         x_min, x_max = map(int, self.live_widget.get_roi_width())
         roi_slice = slice(y_min, y_max)
@@ -232,23 +250,23 @@ class InterferometerGUI(QMainWindow):
         bg = self.background_frame if self.controls.chk_bg.isChecked() else None
         trans = self.controls.chk_transpose.isChecked()
 
-        # Init Burst Worker
+        n_frames = 50
+
         self.burst_thread = QThread()
         self.burst_worker = BurstWorker(self.driver, self.fitter, 50, roi_slice, (x_min, x_max), 
                                       transpose=trans, background=bg)
         self.burst_worker.moveToThread(self.burst_thread)
         
-        # Signals
         self.burst_thread.started.connect(self.burst_worker.run_burst)
         self.burst_worker.progress.connect(self.controls.progress_bar.setValue)
         self.burst_worker.finished.connect(self.handle_burst_finished)
         self.burst_worker.error.connect(self.handle_burst_error)
         
-        # Cleanup signals
         self.burst_worker.finished.connect(self.burst_thread.quit)
         self.burst_worker.finished.connect(self.burst_worker.deleteLater)
         self.burst_thread.finished.connect(self.burst_thread.deleteLater)
         
+        self.controls.progress_bar.setRange(0, n_frames)
         self.controls.progress_bar.setVisible(True)
         self.controls.progress_bar.setValue(0)
         self.controls.btn_burst.setEnabled(False)
@@ -426,9 +444,3 @@ class InterferometerGUI(QMainWindow):
         if hasattr(self, 'driver'): 
             self.driver.close()
         event.accept()
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = InterferometerGUI()
-    window.show()
-    sys.exit(app.exec())

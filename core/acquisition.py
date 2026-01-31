@@ -25,7 +25,6 @@ class BurstWorker(QObject):
             timestamps = []
             lineout_list = [] 
             
-            # 1. OPTIMIZATION: Start stream ONCE before the loop
             # Ensure any previous stream is cleared
             try:
                 self.driver.stop_stream()
@@ -36,13 +35,10 @@ class BurstWorker(QObject):
                 print(f"Burst stream init warning: {e}")
 
             for i in range(self.n_frames):
-                # 2. Use a reasonable timeout. 
                 # If the camera runs at 30fps, a frame takes ~33ms. 
-                # 2.0s is safe, but we should expect return almost instantly.
                 img = self.driver.acquire_frame(timeout=1.0)
                 
                 if img is None: 
-                    # If we time out, don't crash, just try again or skip
                     print(f"Frame {i} dropped (timeout)")
                     continue
 
@@ -89,10 +85,10 @@ class BurstWorker(QObject):
                 timestamps.append(time.time())
                 self.progress.emit(i + 1)
                 
-            # 3. Cleanup
+            # Cleanup
             self.driver.stop_stream()
             
-            # 4. Compile Results
+            # Compile Results
             burst_res = BurstResult(
                 n_frames = self.n_frames,
                 mean_visibility = float(np.mean(vis_list)) if vis_list else 0.0,

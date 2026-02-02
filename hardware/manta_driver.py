@@ -2,12 +2,21 @@ import logging
 import queue
 import numpy as np
 from typing import Optional
-from vmbpy import *
+from vmbpy import (
+    VmbSystem,
+    Camera,
+    Stream,
+    Frame,
+    FrameStatus,
+    VmbCameraError,
+    VmbFeatureError,
+)
 
 class MantaDriver: 
 
     def __init__(self, camera_id: Optional[str] = None):
         self.camera_id = camera_id
+        self.logger = logging.getLogger(__name__)
         self._vmb: Optional[VmbSystem] = None
         self._cam: Optional[Camera] = None
         self._feat_trigger_software = None
@@ -45,7 +54,7 @@ class MantaDriver:
             self._configure_defaults()
             
         except Exception as e:
-            print(f"Connection failed: {e}")
+            self.logger.error(f"Connection failed: {e}")
             self.close()
             raise
 
@@ -57,16 +66,16 @@ class MantaDriver:
             try:
                 self._cam.__exit__(None, None, None)
             except Exception as e:
-                print(f"Error closing camera: {e}")
+                self.logger.error(f"Error closing camera: {e}")
             self._cam = None
             
         if self._vmb:
             try:
                 self._vmb.__exit__(None, None, None)
             except Exception as e:
-                print(f"Error closing Vimba system: {e}")
+                self.logger.error(f"Error closing Vimba system: {e}")
             self._vmb = None
-        print("Camera connection closed.")
+        self.logger.info("Camera connection closed.")
 
     def _configure_defaults(self):
         """Sets up GigE packet sizes, triggers, and pixel formats."""
@@ -94,10 +103,10 @@ class MantaDriver:
                 
             self._feat_trigger_software = self._get_feature("TriggerSoftware")
             if not self._feat_trigger_software:
-                print("TriggerSoftware feature not found. Acquisition may fail.")
+                self.logger.warning("TriggerSoftware feature not found. Acquisition may fail.")
                 
         except VmbFeatureError as e:
-            print(f"Error configuring trigger: {e}")
+            self.logger.error(f"Error configuring trigger: {e}")
 
         # Pixel Format
         pix_fmt = self._get_feature("PixelFormat")
@@ -130,7 +139,7 @@ class MantaDriver:
                 target_us = max(min_exp, min(max_exp, req_us))
                 feat.set(target_us)
             except VmbFeatureError as e:
-                print(f"Failed to set exposure: {e}")
+                self.logger.error(f"Failed to set exposure: {e}")
 
     @property
     def gain(self) -> float:
@@ -147,7 +156,7 @@ class MantaDriver:
                 target = max(min_g, min(max_g, gain_db))
                 feat.set(target)
             except VmbFeatureError as e:
-                print(f"Failed to set gain: {e}")
+                self.logger.error(f"Failed to set gain: {e}")
 
     def start_stream(self):
         """Prepares the camera for continuous acquisition."""
@@ -170,9 +179,9 @@ class MantaDriver:
             # Start streaming with 5 buffers to prevent dropped frames
             self._cam.start_streaming(handler=frame_handler, buffer_count=5)
             self._is_streaming = True
-            print("Continuous streaming started.")
+            self.logger.info("Continuous streaming started.")
         except Exception as e:
-            print(f"Failed to start stream: {e}")
+            self.logger.error(f"Failed to start stream: {e}")
 
     def stop_stream(self):
         """Stops continuous acquisition."""
@@ -186,9 +195,9 @@ class MantaDriver:
             # Clear the queue
             with self._frame_queue.mutex:
                 self._frame_queue.queue.clear()
-            print("Continuous streaming stopped.")
+            self.logger.info("Continuous streaming stopped.")
         except Exception as e:
-            print(f"Failed to stop stream: {e}")
+            self.logger.error(f"Failed to stop stream: {e}")
 
     def acquire_frame(self, timeout: float = 3.0) -> Optional[np.ndarray]:
         """
@@ -210,7 +219,7 @@ class MantaDriver:
                 # Wait for result in queue
                 return self._frame_queue.get(block=True, timeout=timeout)
             except queue.Empty:
-                print("Acquire timeout (Streaming)")
+                self.logger.warning("Acquire timeout (Streaming)")
                 return None
 
         # --- MODE B: Snapshot ---

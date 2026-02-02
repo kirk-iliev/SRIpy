@@ -1,4 +1,4 @@
-from PyQt6.QtCore import pyqtSignal, QObject, QThread
+from PyQt6.QtCore import pyqtSignal, QObject
 class CameraWorker (QObject):
 
     frame_ready = pyqtSignal(object)

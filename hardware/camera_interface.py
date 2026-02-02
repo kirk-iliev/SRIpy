@@ -32,7 +32,6 @@ class CameraInterface(ABC):
         """Set camera gain in decibels"""
         pass
 
-    @property
     @abstractmethod
     def acquire_frame(self) -> np.ndarray:
         """Acquire a single frame from the camera

@@ -40,7 +40,8 @@ class LiveMonitorWidget(QWidget):
         
         # sigRegionChangeFinished fires on *release*.
         # This triggers 'roi_drag_end' which sets user_is_interacting=False
-        self.roi_fit_width.sigRegionChangeFinished.connect(self.roi_drag_end)
+        # Use a lambda to drop the region args and emit our simple signal
+        self.roi_fit_width.sigRegionChangeFinished.connect(lambda: self.roi_drag_end.emit())
         
         layout.addWidget(self.image_container, stretch=3)
         layout.addWidget(self.lineout_plot, stretch=2)
@@ -55,7 +56,7 @@ class LiveMonitorWidget(QWidget):
         self.image_item.setImage(img_data, autoLevels=True)
 
     def update_lineout(self, x_data, y_data):
-        self.curve_raw.setData(y_data)
+        self.curve_raw.setData(x_data, y_data)
 
     def update_fit(self, x_data, y_data):
         self.curve_fit.setData(x_data, y_data)

@@ -42,7 +42,7 @@ class ControlPanelWidget(QWidget):
         rl.addWidget(self.chk_autocenter)
         
         self.btn_reset_roi = QPushButton("Reset / Find ROIs")
-        self.btn_reset_roi.clicked.connect(self.reset_roi_clicked)
+        self.btn_reset_roi.clicked.connect(lambda: self.reset_roi_clicked.emit())
         rl.addWidget(self.btn_reset_roi)
         roi_group.setLayout(rl)
         layout.addWidget(roi_group)
@@ -51,7 +51,7 @@ class ControlPanelWidget(QWidget):
         cal_group = QGroupBox("Calibration")
         cl = QVBoxLayout()
         self.btn_bg = QPushButton("Acquire Background")
-        self.btn_bg.clicked.connect(self.acquire_bg_clicked)
+        self.btn_bg.clicked.connect(lambda: self.acquire_bg_clicked.emit())
         cl.addWidget(self.btn_bg)
         self.chk_bg = QCheckBox("Subtract Background")
         self.chk_bg.setEnabled(False)
@@ -68,13 +68,15 @@ class ControlPanelWidget(QWidget):
         cgl.addWidget(QLabel("Exp (ms):"), 0, 0)
         self.spin_exp = QDoubleSpinBox()
         self.spin_exp.setRange(0.05, 1000); self.spin_exp.setValue(5.0); self.spin_exp.setSingleStep(0.5)
-        self.spin_exp.valueChanged.connect(self.exposure_changed)
+        # Forward the numeric value to the exposure_changed signal
+        self.spin_exp.valueChanged.connect(self.exposure_changed.emit)
         cgl.addWidget(self.spin_exp, 0, 1)
         
         cgl.addWidget(QLabel("Gain (dB):"), 1, 0)
         self.spin_gain = QDoubleSpinBox()
         self.spin_gain.setRange(0, 40)
-        self.spin_gain.valueChanged.connect(self.gain_changed)
+        # Forward the numeric value to the gain_changed signal
+        self.spin_gain.valueChanged.connect(self.gain_changed.emit)
         cgl.addWidget(self.spin_gain, 1, 1)
         cam_group.setLayout(cgl)
         layout.addWidget(cam_group)
@@ -87,7 +89,8 @@ class ControlPanelWidget(QWidget):
         self.spin_dist = QDoubleSpinBox(); self.spin_dist.setRange(0.1, 100); self.spin_dist.setValue(16.5)
         
         for s in [self.spin_lambda, self.spin_slit, self.spin_dist]:
-            s.valueChanged.connect(self.physics_changed)
+            # Drop the numeric argument and emit a generic physics_changed signal
+            s.valueChanged.connect(lambda _val, _self=self: _self.physics_changed.emit())
 
         pl.addWidget(QLabel("Lambda (nm):"), 0, 0); pl.addWidget(self.spin_lambda, 0, 1)
         pl.addWidget(QLabel("Slit Sep (mm):"), 1, 0); pl.addWidget(self.spin_slit, 1, 1)
@@ -99,12 +102,13 @@ class ControlPanelWidget(QWidget):
         self.btn_live = QPushButton("Start Live View")
         self.btn_live.setCheckable(True)
         self.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold; font-size: 14px;")
-        self.btn_live.toggled.connect(self.toggle_live_clicked)
+        # Forward the toggle boolean to the toggle_live_clicked signal
+        self.btn_live.toggled.connect(self.toggle_live_clicked.emit)
         layout.addWidget(self.btn_live)
 
         self.btn_burst = QPushButton("Burst Acquire (50)")
         self.btn_burst.setStyleSheet("background-color: #d95f02; color: white; font-weight: bold; height: 40px;")
-        self.btn_burst.clicked.connect(self.burst_clicked)
+        self.btn_burst.clicked.connect(lambda: self.burst_clicked.emit())
         layout.addWidget(self.btn_burst)
         
         self.progress_bar = QProgressBar()
@@ -112,11 +116,11 @@ class ControlPanelWidget(QWidget):
         layout.addWidget(self.progress_bar)
 
         self.btn_save_data = QPushButton("Save Dataset (Folder)")
-        self.btn_save_data.clicked.connect(self.save_data_clicked)
+        self.btn_save_data.clicked.connect(lambda: self.save_data_clicked.emit())
         layout.addWidget(self.btn_save_data)
 
         self.btn_save_mat = QPushButton("Save for MATLAB (.mat)")
-        self.btn_save_mat.clicked.connect(self.save_mat_clicked)
+        self.btn_save_mat.clicked.connect(lambda: self.save_mat_clicked.emit())
         layout.addWidget(self.btn_save_mat)
         
         layout.addStretch()

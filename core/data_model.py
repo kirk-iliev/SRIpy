@@ -3,13 +3,16 @@ import numpy as np
 import json
 import os
 import scipy.io
-from datetime import datetime
+from datetime import datetime, timezone
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.integer): return int(obj)
         if isinstance(obj, np.floating): return float(obj)
         if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, datetime):
+            # Ensure timezone-aware datetimes are serialized to ISO format
+            return obj.isoformat()
         return super(NumpyEncoder, self).default(obj)
 
 @dataclass
@@ -19,7 +22,7 @@ class ExperimentMetadata:
     wavelength_nm: float = 550.0
     slit_separation_mm: float = 50.0
     distance_m: float = 16.5
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 @dataclass
 class ExperimentResult:
@@ -59,6 +62,9 @@ class DataManager:
             
         np.save(os.path.join(save_path, "raw_image.npy"), raw_image)
         
+        # Ensure timestamp reflects the save time (UTC)
+        metadata.timestamp = datetime.now(timezone.utc)
+
         data_dict = {
             "metadata": asdict(metadata),
             "results": asdict(result)
@@ -76,6 +82,14 @@ class DataManager:
         filename = f"{filename_prefix}_{timestamp}.mat"
         save_path = os.path.join(directory, filename)
         
+        # Ensure timestamp reflects the save time (UTC)
+        metadata.timestamp = datetime.now(timezone.utc)
+
+        # scipy.io.savemat can't handle datetime objects; convert to ISO string
+        meta_for_mat = asdict(metadata)
+        if isinstance(meta_for_mat.get('timestamp'), datetime):
+            meta_for_mat['timestamp'] = meta_for_mat['timestamp'].isoformat()
+
         mat_dict = {
             "IMG": {
                 "raw": raw_image,
@@ -83,9 +97,9 @@ class DataManager:
                 "fit_curve": np.array(result.fit_y),
                 "visibility": result.visibility,
                 "sigma_microns": result.sigma_microns,
-                "saturated": result.is_saturated
+                "issaturated": result.is_saturated
             },
-            "META": asdict(metadata)
+            "META": meta_for_mat
         }
         
         scipy.io.savemat(save_path, mat_dict)
@@ -97,6 +111,9 @@ class DataManager:
         filename = f"{filename_prefix}_BURST_{timestamp}.json"
         save_path = os.path.join(directory, filename)
         
+        # Ensure timestamp reflects the save time (UTC)
+        metadata.timestamp = datetime.now(timezone.utc)
+
         data_dict = {
             "metadata": asdict(metadata),
             "burst_data": asdict(burst_result)

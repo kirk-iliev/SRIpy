@@ -1,8 +1,7 @@
 import numpy as np
 from scipy.optimize import curve_fit
 from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple
-import warnings 
+from typing import Optional, Dict
 
 @dataclass
 class FitResult:
@@ -12,6 +11,8 @@ class FitResult:
     sigma_microns: float = 0.0
     fitted_curve: Optional[np.ndarray] = None
     params: Optional[Dict[str, float]] = None
+    param_errors: Optional[Dict[str, float]] = None
+    pcov: Optional[np.ndarray] = None
     message: str = ""
 
 class InterferenceFitter:
@@ -31,7 +32,7 @@ class InterferenceFitter:
         return data
 
     def _gaussian(self, x: np.ndarray, baseline: float, amp: float, center: float, width: float) -> np.ndarray:
-        return baseline + amp * np.exp(-((x - center) ** 2) / (width ** 2))
+        return baseline + amp * np.exp(-((x - center) ** 2) / (2 * width ** 2))
 
     def _sinc_sq_envelope(self, x: np.ndarray, baseline: float, amp: float, width: float, center: float) -> np.ndarray:
         x_shifted = x - center
@@ -123,20 +124,49 @@ class InterferenceFitter:
         bounds_max = [np.inf, np.inf, 1.0, len(y), 1.0, k_max, np.pi]
         
         try:
-            popt, _ = curve_fit(
+            popt, pcov = curve_fit(
                 self._full_interference_model, x, y, 
                 p0=p0_final, bounds=(bounds_min, bounds_max), maxfev=5000
             )
             
             vis = popt[4]
             sigma = self.calculate_sigma(vis)
-            
+
+            # Full parameter dictionary (named clearly)
+            params = {
+                'baseline': float(popt[0]),
+                'amplitude': float(popt[1]),
+                'sinc_width': float(popt[2]),
+                'sinc_center': float(popt[3]),
+                'visibility': float(popt[4]),
+                'sine_k': float(popt[5]),
+                'sine_phase': float(popt[6]),
+            }
+
+            # Try to compute standard errors from the covariance matrix
+            param_errors = None
+            try:
+                perr = np.sqrt(np.abs(np.diag(pcov)))
+                param_errors = {
+                    'baseline': float(perr[0]),
+                    'amplitude': float(perr[1]),
+                    'sinc_width': float(perr[2]),
+                    'sinc_center': float(perr[3]),
+                    'visibility': float(perr[4]),
+                    'sine_k': float(perr[5]),
+                    'sine_phase': float(perr[6]),
+                }
+            except Exception:
+                param_errors = None
+
             return FitResult(
                 success=True,
                 visibility=vis,
                 sigma_microns=sigma * 1e6, # Convert to microns for display
                 fitted_curve=self._full_interference_model(x, *popt),
-                params={'baseline': popt[0], 'amplitude': popt[1], 'vis': vis}
+                params=params,
+                param_errors=param_errors,
+                pcov=pcov
             )
             
         except Exception as e:

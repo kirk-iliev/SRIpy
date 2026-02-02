@@ -1,7 +1,8 @@
 import sys
 import os
 import numpy as np
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QFileDialog, QApplication, QMessageBox
+import logging
+from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox
 from PyQt6.QtCore import QThread, pyqtSignal
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +40,7 @@ class InterferometerGUI(QMainWindow):
         self.background_frame = None
         self.user_is_interacting = False
         self.worker_is_busy = False
+        self.logger = logging.getLogger(__name__)
 
         # Init Hardware
         try:
@@ -119,26 +121,30 @@ class InterferometerGUI(QMainWindow):
         try:
             if img_int is None: return
             
-            # Convert
-            img = img_int.squeeze().astype(np.float32)
+# Convert and ensure contiguous for efficient ops and rendering
+            img = img_int.squeeze().astype(np.float32, copy=False)
+            img = np.ascontiguousarray(img)
             self.current_raw_image = img
-            
+
             # Check Saturation
             is_saturated = np.max(img) >= 4090
-            
+
             # Background Subtraction
             if self.controls.chk_bg.isChecked() and self.background_frame is not None:
                 if img.shape == self.background_frame.shape:
-                    img = img - self.background_frame
-                    img[img < 0] = 0
-            
-            # Transpose
-            if self.controls.chk_transpose.isChecked():
-                img = img.T
+                    bg = self.background_frame.astype(np.float32, copy=False)
+                    if not bg.flags['C_CONTIGUOUS']:
+                        bg = np.ascontiguousarray(bg)
+                    img -= bg
+                    np.clip(img, 0, None, out=img)
 
-            # Update Visuals
-            self.live_widget.update_image(img.T) # Rotate for pyqtgraph
-            
+            # Transpose (ensure contiguous)
+            if self.controls.chk_transpose.isChecked():
+                img = np.ascontiguousarray(img.T)
+
+            # Update Visuals (provide contiguous transpose for pyqtgraph)
+            self.live_widget.update_image(np.ascontiguousarray(img.T))
+
             # ROI Bounds Check
             h, w = img.shape
             self.ensure_roi_bounds(h, w)
@@ -156,7 +162,8 @@ class InterferometerGUI(QMainWindow):
                 lineout = np.zeros(w)
             
             self.current_lineout = lineout
-            self.live_widget.update_lineout([], lineout)
+            # Provide explicit x-data so plots align with fit
+            self.live_widget.update_lineout(np.arange(len(lineout)), lineout)
 
             # Auto-Center Logic
             if self.controls.chk_autocenter.isChecked() and not self.user_is_interacting:
@@ -179,7 +186,7 @@ class InterferometerGUI(QMainWindow):
                 self.controls.lbl_sat.setStyleSheet("color: green; font-weight: bold;")
 
         except Exception as e:
-            print(f"Update error: {e}")
+            self.logger.exception("Update error")
 
     def handle_fit_result(self, res, x_data):
         self.worker_is_busy = False
@@ -207,7 +214,7 @@ class InterferometerGUI(QMainWindow):
                 
                 # Wait up to 2 seconds for it to fully release the driver
                 if not self.cam_thread.wait(2000):
-                    print("Warning: Camera thread stuck. Forcing termination...")
+                    self.logger.warning("Camera thread stuck. Forcing termination...")
                     self.cam_thread.terminate()
                     self.cam_thread.wait()
 
@@ -239,7 +246,7 @@ class InterferometerGUI(QMainWindow):
             self.cam_worker.stop_acquire()
             
             if not self.cam_thread.wait(1000):
-                print("Warning: Camera thread did not stop cleanly. Forcing...")
+                self.logger.warning("Camera thread did not stop cleanly. Forcing...")
             
             self.cam_thread.start() 
         
@@ -253,7 +260,7 @@ class InterferometerGUI(QMainWindow):
         n_frames = 50
 
         self.burst_thread = QThread()
-        self.burst_worker = BurstWorker(self.driver, self.fitter, 50, roi_slice, (x_min, x_max), 
+        self.burst_worker = BurstWorker(self.driver, self.fitter, n_frames, roi_slice, (x_min, x_max), 
                                       transpose=trans, background=bg)
         self.burst_worker.moveToThread(self.burst_thread)
         
@@ -266,7 +273,8 @@ class InterferometerGUI(QMainWindow):
         self.burst_worker.finished.connect(self.burst_worker.deleteLater)
         self.burst_thread.finished.connect(self.burst_thread.deleteLater)
         
-        self.controls.progress_bar.setRange(0, n_frames)
+        # Worker now emits progress as percentage (0-100)
+        self.controls.progress_bar.setRange(0, 100)
         self.controls.progress_bar.setVisible(True)
         self.controls.progress_bar.setValue(0)
         self.controls.btn_burst.setEnabled(False)
@@ -317,7 +325,7 @@ class InterferometerGUI(QMainWindow):
             dir_path = QFileDialog.getExistingDirectory(self, "Select Save Directory")
             if dir_path:
                 saved_path = DataManager.save_dataset(dir_path, "SRI_Data", self.current_raw_image, meta, res)
-                print(f"Saved to {saved_path}")
+                self.logger.info(f"Saved to {saved_path}")
         except Exception as e:
             QMessageBox.critical(self, "Save Failed", str(e))
 
@@ -346,7 +354,7 @@ class InterferometerGUI(QMainWindow):
             dir_path = QFileDialog.getExistingDirectory(self, "Select Save Directory")
             if dir_path:
                 saved_path = DataManager.save_matlab(dir_path, "SRI_Matlab", self.current_raw_image, meta, res)
-                print(f"Saved MATLAB file to {saved_path}")
+                self.logger.info(f"Saved MATLAB file to {saved_path}")
                 QMessageBox.information(self, "Saved", f"Saved .mat file:\n{os.path.basename(saved_path)}")
         except Exception as e:
             QMessageBox.critical(self, "MATLAB Save Failed", str(e))

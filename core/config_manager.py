@@ -1,5 +1,7 @@
 import json
 import os
+import copy
+import logging
 from typing import Dict, Any
 
 class ConfigManager:
@@ -29,7 +31,9 @@ class ConfigManager:
 
     def __init__(self, filename="sri_config.json"):
         self.filepath = os.path.join(os.getcwd(), filename)
-        self.config = self.DEFAULT_CONFIG.copy()
+        self.logger = logging.getLogger(__name__)
+        # Use a deep copy to avoid shared nested structures between instances
+        self.config = copy.deepcopy(self.DEFAULT_CONFIG)
 
     def load(self) -> Dict[str, Any]:
         """Loads config from disk, falling back to defaults if missing/corrupt."""
@@ -42,7 +46,7 @@ class ConfigManager:
                 # Deep merge to ensure new keys in defaults aren't lost
                 self._deep_update(self.config, loaded)
         except Exception as e:
-            print(f"Failed to load config: {e}. Using defaults.")
+            self.logger.warning(f"Failed to load config: {e}. Using defaults.")
         
         return self.config
 
@@ -51,9 +55,9 @@ class ConfigManager:
         try:
             with open(self.filepath, 'w') as f:
                 json.dump(current_state, f, indent=4)
-            print(f"Configuration saved to {self.filepath}")
+            self.logger.info(f"Configuration saved to {self.filepath}")
         except Exception as e:
-            print(f"Failed to save config: {e}")
+            self.logger.error(f"Failed to save config: {e}")
 
     def _deep_update(self, base_dict, update_dict):
         """Recursive update for nested dictionaries."""

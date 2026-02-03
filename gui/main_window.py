@@ -177,7 +177,7 @@ class InterferometerGUI(QMainWindow):
                     self.worker_is_busy = True
                     self.request_fit.emit(lineout[x_min:x_max], np.arange(x_min, x_max))
             
-            # Update saturation status in UI (Vis/Sigma updated by fit result)
+            # Update saturation status in UI
             if is_saturated:
                 self.controls.lbl_sat.setText("SATURATED!")
                 self.controls.lbl_sat.setStyleSheet("color: red; font-weight: bold; background-color: yellow;")

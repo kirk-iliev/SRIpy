@@ -36,7 +36,11 @@ Where:
 ### 1. System Drivers
 Install the **Vimba SDK** from Allied Vision. Ensure the Vimba viewer can detect the camera before running Python scripts.
 
-### 2. Python Environment
+### 2. Download
+Download or clone the repo into your folder of choice
+
+### 3. Python Environment
+Run this in the root folder:
 ```bash
 python -m venv .venv
 
@@ -56,6 +60,9 @@ In the root folder, open a terminal and run:
 ```bash
 python main.py
 ```
+
+## Notes
+Recommend assigning your GigE camera a static IP address. This can be done in the Vimba Viewer app from AVT.
 
 ## References
 

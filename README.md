@@ -11,6 +11,11 @@ The application separates the camera and analysis loops:
 * **Burst Mode:** For high-speed capture, frames are buffered directly to memory and processed asynchronously to prevent frame drops.
 
 ## Physics Model
+<p align="center">
+  <img width="500" height="127" alt="Interference Pattern" src="https://github.com/user-attachments/assets/c6f700be-68a1-4bad-86db-8902ebc03a6e" />
+  <br>
+  <em>Figure 1: Typical SRI optical layout of an electron beam size measurement system. <sup><a href="#ref1">[1]</a></sup></em>
+</p>
 
 The core analysis engine (`analysis.fitter.InterferenceFitter`) models the intensity profile using a Sinc²-modulated cosine function:
 
@@ -42,3 +47,16 @@ source .venv/bin/activate
 .venv\Scripts\activate
 
 pip install -r requirements.txt
+
+```
+
+## Running
+
+In the root folder, open a terminal and run:
+```bash
+python main.py
+```
+
+## References
+
+<a id="ref1"></a>[1] W. Li et al., ["Synchrotron radiation interferometry for beam size measurement at low current and in large dynamic range,"](https://doi.org/10.1103/PhysRevAccelBeams.25.080702) *Phys. Rev. Accel. Beams* **25**, 080702 (2022).

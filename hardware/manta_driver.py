@@ -1,5 +1,6 @@
 import logging
 import queue
+import threading
 import numpy as np
 from typing import Optional
 from vmbpy import (
@@ -24,7 +25,9 @@ class MantaDriver:
         
         # Streaming State
         self._is_streaming = False
-        self._frame_queue = queue.Queue(maxsize=1)
+        self._frame_queue = queue.Queue(maxsize=5)
+        self._stream_lock = threading.Lock()  # Protects streaming state transitions
+        self._accepting_frames = False  # Flag to discard in-flight frames during shutdown
 
     def connect(self):
         """Initializes Vimba and connects to the camera."""
@@ -161,44 +164,83 @@ class MantaDriver:
 
     def start_stream(self):
         """Prepares the camera for continuous acquisition."""
-        if self._is_streaming or not self._cam:
-            return
+        with self._stream_lock:
+            if self._is_streaming or not self._cam:
+                return
 
-        # Define the handler inside to capture 'self'
-        def frame_handler(cam: Camera, stream: Stream, frame: Frame):
-            if frame.get_status() == FrameStatus.Complete:
-                # If queue is full, discard oldest frame to reduce latency
-                if self._frame_queue.full():
-                    try: self._frame_queue.get_nowait()
-                    except queue.Empty: pass
+            # Define the handler inside to capture 'self'
+            def frame_handler(cam: Camera, stream: Stream, frame: Frame):
+                # Skip frames if stream is shutting down
+                if not self._accepting_frames:
+                    try:
+                        cam.queue_frame(frame)
+                    except Exception:
+                        pass
+                    return
                 
-                self._frame_queue.put(frame.as_numpy_ndarray().copy())
-            
-            cam.queue_frame(frame)
+                try:
+                    if frame.get_status() == FrameStatus.Complete:
+                        # If queue is full, discard oldest frame to make room for newest
+                        if self._frame_queue.full():
+                            try:
+                                self._frame_queue.get_nowait()
+                            except queue.Empty:
+                                pass
+                        
+                        arr = frame.as_numpy_ndarray().copy()
+                        # Use block=True with timeout to ensure frame is queued
+                        # If this fails, the frame is simply not captured (caller will timeout)
+                        try:
+                            self._frame_queue.put(arr, block=True, timeout=0.1)
+                        except queue.Full:
+                            self.logger.debug("Frame queue full, frame dropped")
+                except Exception as e:
+                    self.logger.debug(f"Frame handler conversion error: {e}")
+                finally:
+                    # Always re-queue frame to camera to prevent buffer starvation
+                    try:
+                        cam.queue_frame(frame)
+                    except Exception as e:
+                        self.logger.debug(f"Failed to re-queue frame: {e}")
 
-        try:
-            # Start streaming with 5 buffers to prevent dropped frames
-            self._cam.start_streaming(handler=frame_handler, buffer_count=5)  # type: ignore
-            self._is_streaming = True
-            self.logger.info("Continuous streaming started.")
-        except Exception as e:
-            self.logger.error(f"Failed to start stream: {e}")
+            try:
+                # Enable frame acceptance before starting stream
+                self._accepting_frames = True
+                # Start streaming with 5 buffers to prevent dropped frames
+                self._cam.start_streaming(handler=frame_handler, buffer_count=5)  # type: ignore
+                self._is_streaming = True
+                self.logger.info("Continuous streaming started.")
+            except Exception as e:
+                self.logger.error(f"Failed to start stream: {e}")
+                self._accepting_frames = False
 
     def stop_stream(self):
         """Stops continuous acquisition."""
-        if not self._is_streaming or not self._cam:
-            return
-        
-        try:
-            self._cam.stop_streaming()
-            self._is_streaming = False
+        with self._stream_lock:
+            if not self._is_streaming or not self._cam:
+                return
             
-            # Clear the queue
-            with self._frame_queue.mutex:
-                self._frame_queue.queue.clear()
-            self.logger.info("Continuous streaming stopped.")
-        except Exception as e:
-            self.logger.error(f"Failed to stop stream: {e}")
+            try:
+                # Signal frame handler to stop accepting frames
+                self._accepting_frames = False
+                
+                # Stop the camera stream
+                self._cam.stop_streaming()
+                self._is_streaming = False
+                
+                # Brief delay to allow in-flight frames to complete processing
+                import time
+                time.sleep(0.05)
+                
+                # Now drain queue - any frames from before stop was called will be discarded
+                try:
+                    while not self._frame_queue.empty():
+                        self._frame_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                self.logger.info("Continuous streaming stopped.")
+            except Exception as e:
+                self.logger.error(f"Failed to stop stream: {e}")
 
     def acquire_frame(self, timeout: float = 3.0) -> Optional[np.ndarray]:
         """
@@ -211,11 +253,18 @@ class MantaDriver:
             raise RuntimeError("Camera not connected.")
 
         # --- MODE A: Streaming ---
-        if self._is_streaming:
+        # Check streaming state under lock to avoid race conditions
+        with self._stream_lock:
+            is_streaming = self._is_streaming
+        
+        if is_streaming:
             try:
                 # Fire Software Trigger
                 if self._feat_trigger_software:
-                    self._feat_trigger_software.run()  # type: ignore
+                    try:
+                        self._feat_trigger_software.run()  # type: ignore
+                    except Exception as e:
+                        self.logger.debug(f"Trigger run failed: {e}")
                 
                 # Wait for result in queue
                 return self._frame_queue.get(block=True, timeout=timeout)

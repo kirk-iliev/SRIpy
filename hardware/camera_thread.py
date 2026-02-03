@@ -14,7 +14,7 @@ class CameraWorker (QObject):
             self.driver.start_stream()
 
             while self._is_running:
-                frame = self.driver.acquire_frame(timeout=0.5)
+                frame = self.driver.acquire_frame(timeout=1.0)
                 if frame is not None:
                     self.frame_ready.emit(frame)
 

@@ -51,7 +51,8 @@ class InterferenceFitter:
 
     def fit(self, lineout: np.ndarray) -> FitResult:
         # Sanitize Input
-        y = np.nan_to_num(lineout.astype(float))
+        # Ensure we accept both numpy arrays and python lists by coercing to ndarray
+        y = np.nan_to_num(np.asarray(lineout, dtype=float))
         x = np.arange(len(y))
         
         # Fail early if signal is dead (read noise only)

@@ -31,12 +31,12 @@ class BurstWorker(QObject):
             raw_lineouts = []
             timestamps = []
             
-            # Reset stream to clear old buffers
+            # Reset stream to clear old buffers and ensure clean state
             try:
                 self.driver.stop_stream()
-                time.sleep(0.1)
+                time.sleep(0.2)  # Give stream time to fully shut down
                 self.driver.start_stream()
-                time.sleep(0.1)
+                time.sleep(0.1)  # Give stream time to start
             except Exception as e:
                 self.logger.warning(f"Burst stream init warning: {e}")
 

@@ -43,6 +43,10 @@ class InterferometerGUI(QMainWindow):
         self.user_is_interacting = False
         self.worker_is_busy = False
         self.logger = logging.getLogger(__name__)
+        
+        # State tracking for burst vs live view
+        self._live_was_running_before_burst = False
+        self._burst_is_running = False
 
         # Init Hardware
         try:
@@ -179,7 +183,8 @@ class InterferometerGUI(QMainWindow):
                 x_min, x_max = max(0, x_min), min(w, x_max)
                 if x_max > x_min:
                     self.worker_is_busy = True
-                    self.request_fit.emit(lineout[x_min:x_max].tolist(), np.arange(x_min, x_max).tolist())
+                    # Pass numpy arrays to the analysis worker (avoid converting to lists)
+                    self.request_fit.emit(lineout[x_min:x_max], np.arange(x_min, x_max))
             
             # Update saturation status in UI
             if is_saturated:
@@ -216,13 +221,15 @@ class InterferometerGUI(QMainWindow):
                 
                 self.cam_thread.quit()
                 
-                # Wait up to 2 seconds for it to fully release the driver
-                if not self.cam_thread.wait(2000):
+                # Wait up to 3 seconds for thread to cleanly exit
+                if not self.cam_thread.wait(3000):
                     self.logger.warning("Camera thread stuck. Forcing termination...")
                     self.cam_thread.terminate()
-                    self.cam_thread.wait()
+                    if not self.cam_thread.wait(1000):
+                        self.logger.error("Camera thread failed to terminate")
 
-            self.driver.stop_stream() 
+            # After thread is fully stopped, safely stop driver stream
+            self.driver.stop_stream()
             
             raw = self.driver.acquire_frame(timeout=2.0)
             
@@ -239,24 +246,32 @@ class InterferometerGUI(QMainWindow):
 
         finally:
             if was_live:
-                self.cam_thread.start() 
+                # Safely restart thread
+                if not self.cam_thread.isRunning():
+                    self.cam_thread.start()
                 
                 self.controls.btn_live.setChecked(True)
-                # self.toggle_live_view(True)
+                self.start_worker_signal.emit()
 
     def start_burst_acquisition(self):
-        if self.cam_worker._is_running:
-            self.controls.btn_live.setChecked(False)
+        # Track whether live view was active before we started burst
+        self._live_was_running_before_burst = self.cam_worker._is_running
+        self._burst_is_running = True
+        
+        if self._live_was_running_before_burst:
+            # Cleanly stop live view acquisition
             self.cam_worker.stop_acquire()
-
             self.cam_thread.quit()
             
-            if not self.cam_thread.wait(1000):
+            # Wait for thread to fully exit before proceeding
+            if not self.cam_thread.wait(3000):
                 self.logger.warning("Camera thread did not stop cleanly. Forcing...")
                 self.cam_thread.terminate()
-                self.cam_thread.wait()
+                if not self.cam_thread.wait(1000):
+                    self.logger.error("Camera thread forced termination failed")
             
-            # self.cam_thread.start() 
+            # Let BurstWorker handle stream cleanup and setup
+            # Don't call stop_stream() here - BurstWorker will reset the stream properly
         
         roi_rows = self.live_widget.get_roi_rows()
         roi_width = self.live_widget.get_roi_width()
@@ -283,7 +298,7 @@ class InterferometerGUI(QMainWindow):
         self.burst_worker.finished.connect(self.burst_worker.deleteLater)
         self.burst_thread.finished.connect(self.burst_thread.deleteLater)
         
-        # Worker now emits progress as percentage (0-100)
+        # Update UI to show burst is running
         self.controls.progress_bar.setRange(0, 100)
         self.controls.progress_bar.setVisible(True)
         self.controls.progress_bar.setValue(0)
@@ -293,8 +308,9 @@ class InterferometerGUI(QMainWindow):
         self.burst_thread.start()
 
     def handle_burst_finished(self, res):
+        """Handle burst completion and restore UI/live view state."""
+        self._burst_is_running = False
         self.controls.btn_burst.setEnabled(True)
-        self.controls.btn_live.setEnabled(True)
         self.controls.progress_bar.setVisible(False)
         self.last_burst_result = res
         
@@ -302,11 +318,57 @@ class InterferometerGUI(QMainWindow):
                               f"Mean Sigma: {res.mean_sigma:.2f} um\nMean Vis: {res.mean_visibility:.3f}")
         
         self.history_widget.add_point(res.mean_sigma)
+        
+        # Restore live view if it was running before burst
+        if self._live_was_running_before_burst:
+            # Ensure we have a fresh thread
+            if not self.cam_thread.isRunning():
+                self.cam_thread = QThread()
+                self.cam_worker = CameraWorker(self.driver)
+                self.cam_worker.moveToThread(self.cam_thread)
+                self.cam_worker.frame_ready.connect(self.update_frame)
+                self.start_worker_signal.connect(self.cam_worker.start_acquire)
+                self.cam_thread.start()
+                
+                # Signal the worker to start acquiring
+                self.start_worker_signal.emit()
+            
+            # Update button state to match internal state
+            self.controls.btn_live.setChecked(True)
+        else:
+            # Live view was not running, just enable the button
+            self.controls.btn_live.setChecked(False)
+        
+        self.controls.btn_live.setEnabled(True)
+        self._live_was_running_before_burst = False
 
     def handle_burst_error(self, err):
+        """Handle burst errors and restore UI state."""
+        self._burst_is_running = False
         self.controls.btn_burst.setEnabled(True)
         self.controls.btn_live.setEnabled(True)
+        self.controls.progress_bar.setVisible(False)
+        
         QMessageBox.critical(self, "Burst Error", err)
+        self.logger.error(f"Burst acquisition error: {err}")
+        
+        # If live view was running before burst, attempt to restart it
+        if self._live_was_running_before_burst:
+            if not self.cam_thread.isRunning():
+                self.cam_thread = QThread()
+                self.cam_worker = CameraWorker(self.driver)
+                self.cam_worker.moveToThread(self.cam_thread)
+                self.cam_worker.frame_ready.connect(self.update_frame)
+                self.start_worker_signal.connect(self.cam_worker.start_acquire)
+                self.cam_thread.start()
+                
+                self.start_worker_signal.emit()
+            
+            self.controls.btn_live.setChecked(True)
+        else:
+            self.controls.btn_live.setChecked(False)
+        
+        self._live_was_running_before_burst = False
         self.burst_thread.quit()
 
     def save_full_dataset(self):
@@ -404,16 +466,36 @@ class InterferometerGUI(QMainWindow):
         self.live_widget.set_roi_width(w*0.25, w*0.75)
 
     def toggle_live_view(self, checked):
+        """Toggle live view on/off with proper state management."""
         if checked:
+            # User wants to start live view
+            # First, ensure burst is not running
+            if self._burst_is_running:
+                self.logger.warning("Cannot start live view while burst is running")
+                self.controls.btn_live.setChecked(False)
+                return
+            
+            # Ensure thread is fully stopped before restarting
+            if self.cam_thread.isRunning():
+                self.cam_worker.stop_acquire()
+                self.cam_thread.quit()
+                if not self.cam_thread.wait(2000):
+                    self.logger.warning("Camera thread did not exit cleanly")
+                    self.cam_thread.terminate()
+                    self.cam_thread.wait()
+            
+            # Now safely restart thread and start acquiring
             if not self.cam_thread.isRunning():
                 self.cam_thread.start()
+            
             self.controls.btn_live.setText("Stop Live View")
             self.controls.btn_live.setStyleSheet("background-color: red; color: white; font-weight: bold;")
             self.start_worker_signal.emit()
         else:
+            # User wants to stop live view
+            self.cam_worker.stop_acquire()
             self.controls.btn_live.setText("Start Live View")
             self.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
-            self.cam_worker.stop_acquire()
 
     def update_physics(self):
         self.fitter.wavelength = self.controls.spin_lambda.value() * 1e-9

@@ -244,11 +244,15 @@ class InterferometerGUI(QMainWindow):
         if self.cam_worker._is_running:
             self.controls.btn_live.setChecked(False)
             self.cam_worker.stop_acquire()
+
+            self.cam_thread.quit()
             
             if not self.cam_thread.wait(1000):
                 self.logger.warning("Camera thread did not stop cleanly. Forcing...")
+                self.cam_thread.terminate()
+                self.cam_thread.wait()
             
-            self.cam_thread.start() 
+            # self.cam_thread.start() 
         
         y_min, y_max = map(int, self.live_widget.get_roi_rows())
         x_min, x_max = map(int, self.live_widget.get_roi_width())
@@ -390,6 +394,8 @@ class InterferometerGUI(QMainWindow):
 
     def toggle_live_view(self, checked):
         if checked:
+            if not self.cam_thread.isRunning():
+                self.cam_thread.start()
             self.controls.btn_live.setText("Stop Live View")
             self.controls.btn_live.setStyleSheet("background-color: red; color: white; font-weight: bold;")
             self.start_worker_signal.emit()

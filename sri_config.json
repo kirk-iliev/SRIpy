@@ -1,7 +1,7 @@
 {
     "camera": {
-        "exposure_ms": 7.05,
-        "gain_db": 0.0,
+        "exposure_ms": 7.0,
+        "gain_db": 4.0,
         "transpose": false
     },
     "physics": {
@@ -12,8 +12,8 @@
     "roi": {
         "rows_min": 304.0,
         "rows_max": 912.0,
-        "fit_width_min": 472.0,
-        "fit_width_max": 1440.0,
+        "fit_width_min": 498.0,
+        "fit_width_max": 1466.0,
         "auto_center": true
     }
 }

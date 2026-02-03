@@ -21,7 +21,7 @@ class InterferenceFitter:
         self.slit_sep = slit_separation
         self.distance = distance
 
-    def get_lineout(self, image: np.ndarray, roi_slice: slice = None) -> np.ndarray:
+    def get_lineout(self, image: np.ndarray, roi_slice: Optional[slice] = None) -> np.ndarray:
         if roi_slice:
             data = image[roi_slice, :] if image.ndim == 2 else image
         else:

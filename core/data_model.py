@@ -6,14 +6,14 @@ import scipy.io
 from datetime import datetime, timezone
 
 class NumpyEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.integer): return int(obj)
-        if isinstance(obj, np.floating): return float(obj)
-        if isinstance(obj, np.ndarray): return obj.tolist()
-        if isinstance(obj, datetime):
+    def default(self, o):
+        if isinstance(o, np.integer): return int(o)
+        if isinstance(o, np.floating): return float(o)
+        if isinstance(o, np.ndarray): return o.tolist()
+        if isinstance(o, datetime):
             # Ensure timezone-aware datetimes are serialized to ISO format
-            return obj.isoformat()
-        return super(NumpyEncoder, self).default(obj)
+            return o.isoformat()
+        return super(NumpyEncoder, self).default(o)
 
 @dataclass
 class ExperimentMetadata:

@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import Qt, pyqtSignal
 import pyqtgraph as pg
+from typing import Tuple
 
 class LiveMonitorWidget(QWidget):
     # Signals to communicate with Main Window
@@ -14,12 +15,12 @@ class LiveMonitorWidget(QWidget):
         
         # Camera Frame Plot
         self.image_container = pg.GraphicsLayoutWidget()
-        self.image_plot = self.image_container.addPlot(title="Camera Frame")
+        self.image_plot = self.image_container.addPlot(title="Camera Frame")  # type: ignore
         self.image_item = pg.ImageItem()
         self.image_plot.addItem(self.image_item)
         
         # ROI: Vertical Binning Region
-        self.roi_rows = pg.LinearRegionItem(orientation=pg.LinearRegionItem.Horizontal, brush=(0, 50, 255, 50))
+        self.roi_rows = pg.LinearRegionItem(orientation='horizontal', brush=(0, 50, 255, 50))  # type: ignore
         self.roi_rows.setRegion([400, 800]) 
         self.image_plot.addItem(self.roi_rows)
         
@@ -30,7 +31,7 @@ class LiveMonitorWidget(QWidget):
         self.curve_fit = self.lineout_plot.plot(pen=pg.mkPen('r', width=3, style=Qt.PenStyle.DashLine), name="Fit")
         
         # ROI: Fit Width Region
-        self.roi_fit_width = pg.LinearRegionItem(orientation=pg.LinearRegionItem.Vertical, brush=(0, 255, 0, 30))
+        self.roi_fit_width = pg.LinearRegionItem(orientation='vertical', brush=(0, 255, 0, 30))  # type: ignore
         self.roi_fit_width.setRegion([800, 1200]) 
         self.lineout_plot.addItem(self.roi_fit_width)
 
@@ -61,11 +62,11 @@ class LiveMonitorWidget(QWidget):
     def update_fit(self, x_data, y_data):
         self.curve_fit.setData(x_data, y_data)
         
-    def get_roi_rows(self):
-        return self.roi_rows.getRegion()
+    def get_roi_rows(self) -> Tuple[float, float]:
+        return self.roi_rows.getRegion()  # type: ignore
 
-    def get_roi_width(self):
-        return self.roi_fit_width.getRegion()
+    def get_roi_width(self) -> Tuple[float, float]:
+        return self.roi_fit_width.getRegion()  # type: ignore
 
     def set_roi_rows(self, min_val, max_val):
         self.roi_rows.setRegion([min_val, max_val])

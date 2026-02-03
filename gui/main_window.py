@@ -2,8 +2,10 @@ import sys
 import os
 import numpy as np
 import logging
+from typing import Tuple
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox
 from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtGui import QCloseEvent
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
@@ -150,7 +152,8 @@ class InterferometerGUI(QMainWindow):
             self.ensure_roi_bounds(h, w)
             
             # Extract Lineout
-            y_min, y_max = map(int, self.live_widget.get_roi_rows())
+            roi_rows: Tuple[float, float] = self.live_widget.get_roi_rows()
+            y_min, y_max = int(roi_rows[0]), int(roi_rows[1])
             # Clamp to image height
             y_min = max(0, min(y_min, h - 1))
             y_max = max(1, min(y_max, h))
@@ -171,11 +174,12 @@ class InterferometerGUI(QMainWindow):
 
             # Trigger Analysis
             if not self.worker_is_busy:
-                x_min, x_max = map(int, self.live_widget.get_roi_width())
+                roi_width: Tuple[float, float] = self.live_widget.get_roi_width()
+                x_min, x_max = int(roi_width[0]), int(roi_width[1])
                 x_min, x_max = max(0, x_min), min(w, x_max)
                 if x_max > x_min:
                     self.worker_is_busy = True
-                    self.request_fit.emit(lineout[x_min:x_max], np.arange(x_min, x_max))
+                    self.request_fit.emit(lineout[x_min:x_max].tolist(), np.arange(x_min, x_max).tolist())
             
             # Update saturation status in UI
             if is_saturated:
@@ -254,8 +258,10 @@ class InterferometerGUI(QMainWindow):
             
             # self.cam_thread.start() 
         
-        y_min, y_max = map(int, self.live_widget.get_roi_rows())
-        x_min, x_max = map(int, self.live_widget.get_roi_width())
+        roi_rows = self.live_widget.get_roi_rows()
+        roi_width = self.live_widget.get_roi_width()
+        y_min, y_max = int(roi_rows[0]), int(roi_rows[1])
+        x_min, x_max = int(roi_width[0]), int(roi_width[1])
         roi_slice = slice(y_min, y_max)
         
         bg = self.background_frame if self.controls.chk_bg.isChecked() else None
@@ -318,11 +324,13 @@ class InterferometerGUI(QMainWindow):
                 QMessageBox.warning(self, "No Data", "No fit result to save.")
                 return
 
+            lineout_data = self.current_lineout.tolist() if (hasattr(self, 'current_lineout') and isinstance(self.current_lineout, np.ndarray)) else (list(self.current_lineout) if hasattr(self, 'current_lineout') else [])
+            fit_data = self.last_fit_result.fitted_curve.tolist() if (self.last_fit_result.fitted_curve is not None and isinstance(self.last_fit_result.fitted_curve, np.ndarray)) else (list(self.last_fit_result.fitted_curve) if self.last_fit_result.fitted_curve is not None else [])
             res = ExperimentResult(
                 visibility = self.last_fit_result.visibility,
                 sigma_microns = self.last_fit_result.sigma_microns,
-                lineout_y = self.current_lineout if hasattr(self, 'current_lineout') else [],
-                fit_y = self.last_fit_result.fitted_curve if self.last_fit_result.fitted_curve is not None else [],
+                lineout_y = lineout_data,
+                fit_y = fit_data,
                 is_saturated = (self.controls.lbl_sat.text() != "OK")
             )
 
@@ -353,7 +361,7 @@ class InterferometerGUI(QMainWindow):
             
             res = ExperimentResult(**res_args)
             if hasattr(self, 'current_lineout'):
-                res.lineout_y = self.current_lineout
+                res.lineout_y = self.current_lineout.tolist() if isinstance(self.current_lineout, np.ndarray) else list(self.current_lineout)
 
             dir_path = QFileDialog.getExistingDirectory(self, "Select Save Directory")
             if dir_path:
@@ -366,16 +374,19 @@ class InterferometerGUI(QMainWindow):
     # --- Helper Logic ---
 
     def ensure_roi_bounds(self, h, w):
-        r_min, r_max = self.live_widget.get_roi_rows()
+        roi_rows = self.live_widget.get_roi_rows()
+        r_min, r_max = int(roi_rows[0]), int(roi_rows[1])
         if r_min > h or r_max < 0: self.live_widget.set_roi_rows(h*0.25, h*0.75)
         
-        c_min, c_max = self.live_widget.get_roi_width()
+        roi_width = self.live_widget.get_roi_width()
+        c_min, c_max = int(roi_width[0]), int(roi_width[1])
         if c_min > w or c_max < 0: self.live_widget.set_roi_width(w*0.25, w*0.75)
 
     def run_autocenter(self, lineout, w):
-        peak_idx = np.argmax(lineout)
+        peak_idx = int(np.argmax(lineout))
         if lineout[peak_idx] > 200 and 5 < peak_idx < (w-5):
-            c_min, c_max = self.live_widget.get_roi_width()
+            roi_width = self.live_widget.get_roi_width()
+            c_min, c_max = int(roi_width[0]), int(roi_width[1])
             width = c_max - c_min
             new_min = max(0, peak_idx - width/2)
             new_max = min(w, peak_idx + width/2)
@@ -430,8 +441,10 @@ class InterferometerGUI(QMainWindow):
         
         self.update_physics()
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0: QCloseEvent | None) -> None:
         # Save Config
+        roi_rows = self.live_widget.get_roi_rows()
+        roi_width = self.live_widget.get_roi_width()
         state = {
             "camera": { "exposure_ms": self.controls.spin_exp.value(), 
                         "gain_db": self.controls.spin_gain.value(),
@@ -439,10 +452,10 @@ class InterferometerGUI(QMainWindow):
             "physics": { "wavelength_nm": self.controls.spin_lambda.value(), 
                          "slit_separation_mm": self.controls.spin_slit.value(),
                          "distance_m": self.controls.spin_dist.value() },
-            "roi": { "rows_min": self.live_widget.get_roi_rows()[0], 
-                     "rows_max": self.live_widget.get_roi_rows()[1],
-                     "fit_width_min": self.live_widget.get_roi_width()[0], 
-                     "fit_width_max": self.live_widget.get_roi_width()[1],
+            "roi": { "rows_min": roi_rows[0], 
+                     "rows_max": roi_rows[1],
+                     "fit_width_min": roi_width[0], 
+                     "fit_width_max": roi_width[1],
                      "auto_center": self.controls.chk_autocenter.isChecked() }
         }
         self.config_manager.save(state)
@@ -457,4 +470,5 @@ class InterferometerGUI(QMainWindow):
         
         if hasattr(self, 'driver'): 
             self.driver.close()
-        event.accept()
+        if a0 is not None:
+            a0.accept()

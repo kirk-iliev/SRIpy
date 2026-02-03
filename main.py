@@ -14,13 +14,15 @@ def main():
 
     try:
         window = InterferometerGUI()
+    except Exception:
+        handle_exception(*sys.exc_info())
+        sys.exit(1)
+
+    try:
         window.show()
-        
         sys.exit(app.exec())
-        
-    except Exception as e:
-        print(f"Critical Error during startup: {e}")
-        traceback.print_exc()
+    except Exception:
+        handle_exception(*sys.exc_info())
         sys.exit(1)
 
 def handle_exception(exc_type, exc_value, exc_traceback):

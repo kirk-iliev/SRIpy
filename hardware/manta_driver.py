@@ -11,6 +11,7 @@ from vmbpy import (
     VmbCameraError,
     VmbFeatureError,
 )
+from typing import Any, cast
 
 class MantaDriver: 
 
@@ -31,25 +32,25 @@ class MantaDriver:
             return
 
         try:
-            self._vmb = VmbSystem.get_instance()
-            self._vmb.__enter__()
+            self._vmb = cast(VmbSystem, VmbSystem.get_instance())  # type: ignore
+            self._vmb.__enter__()  # type: ignore
 
             if self.camera_id:
                 try:
-                    self._cam = self._vmb.get_camera_by_id(self.camera_id)
+                    self._cam = self._vmb.get_camera_by_id(self.camera_id)  # type: ignore
                 except VmbCameraError:
                     raise RuntimeError(f"Camera {self.camera_id} not found.")
             else:
-                cams = self._vmb.get_all_cameras()
+                cams = self._vmb.get_all_cameras()  # type: ignore
                 if not cams:
                     raise RuntimeError("No cameras found via Vimba.")
                 self._cam = cams[0]
 
-            self._cam.__enter__()
+            self._cam.__enter__()  # type: ignore
             # Setup logging
             logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
             self.logger = logging.getLogger(__name__)
-            self.logger.info(f"Connected to: {self._cam.get_name()} (ID: {self._cam.get_id()})")
+            self.logger.info(f"Connected to: {self._cam.get_name()} (ID: {self._cam.get_id()})")  # type: ignore
             
             self._configure_defaults()
             
@@ -64,14 +65,14 @@ class MantaDriver:
         
         if self._cam:
             try:
-                self._cam.__exit__(None, None, None)
+                self._cam.__exit__(None, None, None)  # type: ignore
             except Exception as e:
                 self.logger.error(f"Error closing camera: {e}")
             self._cam = None
             
         if self._vmb:
             try:
-                self._vmb.__exit__(None, None, None)
+                self._vmb.__exit__(None, None, None)  # type: ignore
             except Exception as e:
                 self.logger.error(f"Error closing Vimba system: {e}")
             self._vmb = None
@@ -87,7 +88,7 @@ class MantaDriver:
             feat = self._get_feature(feature_name)
             if feat:
                 try:
-                    feat.set(1400) 
+                    feat.set(1400)  # type: ignore
                     break 
                 except VmbFeatureError:
                     pass
@@ -98,8 +99,8 @@ class MantaDriver:
             trigger_source = self._get_feature("TriggerSource")
             
             if trigger_mode and trigger_source:
-                trigger_mode.set('On')
-                trigger_source.set('Software')
+                trigger_mode.set('On')  # type: ignore
+                trigger_source.set('Software')  # type: ignore
                 
             self._feat_trigger_software = self._get_feature("TriggerSoftware")
             if not self._feat_trigger_software:
@@ -112,9 +113,9 @@ class MantaDriver:
         pix_fmt = self._get_feature("PixelFormat")
         if pix_fmt:
             try:
-                available = pix_fmt.get_available_entries()
+                available = pix_fmt.get_available_entries()  # type: ignore
                 target_fmt = 'Mono12' if 'Mono12' in available else 'Mono8'
-                pix_fmt.set(target_fmt)
+                pix_fmt.set(target_fmt)  # type: ignore
             except VmbFeatureError:
                 pass
 
@@ -124,7 +125,7 @@ class MantaDriver:
         feat = self._get_feature("ExposureTimeAbs") or self._get_feature("ExposureTime")
         if feat:
             try:
-                return feat.get() / 1_000_000.0
+                return float(feat.get())  / 1_000_000.0  # type: ignore
             except VmbFeatureError:
                 pass
         return 0.0
@@ -134,10 +135,10 @@ class MantaDriver:
         feat = self._get_feature("ExposureTimeAbs") or self._get_feature("ExposureTime")
         if feat:
             try:
-                min_exp, max_exp = feat.get_range()
+                min_exp, max_exp = feat.get_range()  # type: ignore
                 req_us = exposure_time_s * 1_000_000.0
                 target_us = max(min_exp, min(max_exp, req_us))
-                feat.set(target_us)
+                feat.set(target_us)  # type: ignore
             except VmbFeatureError as e:
                 self.logger.error(f"Failed to set exposure: {e}")
 
@@ -145,16 +146,16 @@ class MantaDriver:
     def gain(self) -> float:
         """Gain in dB."""
         feat = self._get_feature("Gain")
-        return feat.get() if feat else 0.0
+        return float(feat.get()) if feat else 0.0  # type: ignore
 
     @gain.setter
     def gain(self, gain_db: float):
         feat = self._get_feature("Gain")
         if feat:
             try:
-                min_g, max_g = feat.get_range()
+                min_g, max_g = feat.get_range()  # type: ignore
                 target = max(min_g, min(max_g, gain_db))
-                feat.set(target)
+                feat.set(target)  # type: ignore
             except VmbFeatureError as e:
                 self.logger.error(f"Failed to set gain: {e}")
 
@@ -177,7 +178,7 @@ class MantaDriver:
 
         try:
             # Start streaming with 5 buffers to prevent dropped frames
-            self._cam.start_streaming(handler=frame_handler, buffer_count=5)
+            self._cam.start_streaming(handler=frame_handler, buffer_count=5)  # type: ignore
             self._is_streaming = True
             self.logger.info("Continuous streaming started.")
         except Exception as e:
@@ -214,7 +215,7 @@ class MantaDriver:
             try:
                 # Fire Software Trigger
                 if self._feat_trigger_software:
-                    self._feat_trigger_software.run()
+                    self._feat_trigger_software.run()  # type: ignore
                 
                 # Wait for result in queue
                 return self._frame_queue.get(block=True, timeout=timeout)
@@ -236,14 +237,14 @@ class MantaDriver:
             cam.queue_frame(frame)
 
         try:
-            self._cam.start_streaming(handler=handler, buffer_count=1)
+            self._cam.start_streaming(handler=handler, buffer_count=1)  # type: ignore
             if self._feat_trigger_software:
-                self._feat_trigger_software.run()
+                self._feat_trigger_software.run()  # type: ignore
             return q.get(block=True, timeout=timeout)
         except Exception:
             return None
         finally:
-            try: self._cam.stop_streaming()
+            try: self._cam.stop_streaming()  # type: ignore
             except: pass
 
     def _get_feature(self, name: str):

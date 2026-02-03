@@ -13,7 +13,11 @@ class ConfigManager:
             "exposure_ms": 5.0,
             "gain_db": 0.0,
             "transpose": False,
-            "subtract_background": False
+            "subtract_background": False,
+            "saturation_threshold": 4090
+        },
+        "analysis": {
+            "min_signal_threshold": 50
         },
         "physics": {
             "wavelength_nm": 550.0,

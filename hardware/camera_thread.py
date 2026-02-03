@@ -14,9 +14,18 @@ class CameraWorker (QObject):
             self.driver.start_stream()
 
             while self._is_running:
-                frame = self.driver.acquire_frame(timeout=1.0)
-                if frame is not None:
-                    self.frame_ready.emit(frame)
+                try:
+                    frame = self.driver.acquire_frame(timeout=0.1)
+                    if frame is not None:
+                        self.frame_ready.emit(frame)
+                except Exception as e:
+                    # Log but don't crash; could be temporary network issue
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"Error acquiring frame: {e}", exc_info=True)
+                    self.error_occurred.emit(str(e))
+                    # Break loop so caller can restart if needed
+                    break
 
         except Exception as e:
             self.error_occurred.emit(str(e))

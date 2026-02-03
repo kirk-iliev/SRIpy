@@ -16,10 +16,11 @@ class FitResult:
     message: str = ""
 
 class InterferenceFitter:
-    def __init__(self, wavelength: float = 550e-9, slit_separation: float = 0.05, distance: float = 16.5):
+    def __init__(self, wavelength: float = 550e-9, slit_separation: float = 0.05, distance: float = 16.5, min_signal: float = 50.0):
         self.wavelength = wavelength
         self.slit_sep = slit_separation
         self.distance = distance
+        self.min_signal = min_signal
 
     def get_lineout(self, image: np.ndarray, roi_slice: Optional[slice] = None) -> np.ndarray:
         if roi_slice:
@@ -56,7 +57,7 @@ class InterferenceFitter:
         x = np.arange(len(y))
         
         # Fail early if signal is dead (read noise only)
-        if (np.max(y) - np.min(y)) < 50:
+        if (np.max(y) - np.min(y)) < self.min_signal:
              return FitResult(success=False, message="Low Signal")
         
         # --- Gaussian Estimate (Find Center) ---
@@ -81,9 +82,19 @@ class InterferenceFitter:
             bounds_g_max = [np.inf, np.inf, len(y), len(y)]
             
             popt_g, _ = curve_fit(self._gaussian, x, y, p0=p0_gauss, 
-                                  bounds=(bounds_g_min, bounds_g_max), maxfev=1000)
+                      bounds=(bounds_g_min, bounds_g_max), maxfev=1000)
             center_guess = popt_g[2]
-        except:
+        except RuntimeError as e:
+            # Fit failed to converge
+            print(f"Gaussian fit failed to converge: {e}")
+            center_guess = peak_idx
+        except ValueError as e:
+            # Invalid bounds or parameters
+            print(f"Gaussian fit invalid parameters: {e}")
+            center_guess = peak_idx
+        except Exception as e:
+            # Catch any other unexpected errors
+            print(f"Gaussian fit unexpected error: {e}")
             center_guess = peak_idx
 
         # FFT (Find Frequency) 

@@ -43,7 +43,12 @@ class BurstWorker(QObject):
             captured_count = 0
             for i in range(self.n_frames):
                 # Timeout is generous as we are not CPU constrained here
-                img = self.driver.acquire_frame(timeout=1.0)
+                try:
+                    img = self.driver.acquire_frame(timeout=1.0)
+                except Exception as e:
+                    self.logger.error(f"Failed to acquire frame {i}: {e}", exc_info=True)
+                    self.error.emit(f"Frame acquisition failed at frame {i}: {str(e)}")
+                    break
                 
                 if img is None: 
                     self.logger.warning(f"Frame {i} dropped (timeout)")

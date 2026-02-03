@@ -1,3 +1,4 @@
+from concurrent.futures import thread
 import sys
 import os
 import numpy as np
@@ -133,7 +134,8 @@ class InterferometerGUI(QMainWindow):
             self.current_raw_image = img
 
             # Check Saturation
-            is_saturated = np.max(img) >= 4090
+            sat_limit = getattr(self, 'saturation_threshold', 4090)
+            is_saturated = np.max(img) >= sat_limit
 
             # Background Subtraction
             if self.controls.chk_bg.isChecked() and self.background_frame is not None:
@@ -223,15 +225,16 @@ class InterferometerGUI(QMainWindow):
                 
                 # Wait up to 3 seconds for thread to cleanly exit
                 if not self.cam_thread.wait(3000):
-                    self.logger.warning("Camera thread stuck. Forcing termination...")
-                    self.cam_thread.terminate()
-                    if not self.cam_thread.wait(1000):
-                        self.logger.error("Camera thread failed to terminate")
+                    self.logger.error("Thread stuck during background acquire wait.")
 
             # After thread is fully stopped, safely stop driver stream
             self.driver.stop_stream()
             
-            raw = self.driver.acquire_frame(timeout=2.0)
+            try:
+                raw = self.driver.acquire_frame(timeout=2.0)
+            except Exception as e:
+                self.logger.error(f"Failed to acquire background frame: {e}", exc_info=True)
+                raise
             
             if raw is not None:
                 self.background_frame = raw.squeeze().astype(np.float32)
@@ -247,7 +250,7 @@ class InterferometerGUI(QMainWindow):
         finally:
             if was_live:
                 # Safely restart thread
-                if not self.cam_thread.isRunning():
+                if self.cam_thread is not None and not self.cam_thread.isRunning():
                     self.cam_thread.start()
                 
                 self.controls.btn_live.setChecked(True)
@@ -269,6 +272,14 @@ class InterferometerGUI(QMainWindow):
                 self.cam_thread.terminate()
                 if not self.cam_thread.wait(1000):
                     self.logger.error("Camera thread forced termination failed")
+
+            # Schedule the old worker and thread for deletion
+            self.cam_worker.deleteLater()
+            self.cam_thread.deleteLater()
+        
+            # Explicitly set to None to prevent accidental reuse before recreation
+            self.cam_worker = None
+            self.cam_thread = None
             
             # Let BurstWorker handle stream cleanup and setup
             # Don't call stop_stream() here - BurstWorker will reset the stream properly
@@ -322,11 +333,16 @@ class InterferometerGUI(QMainWindow):
         # Restore live view if it was running before burst
         if self._live_was_running_before_burst:
             # Ensure we have a fresh thread
-            if not self.cam_thread.isRunning():
+            if self.cam_thread is None or not self.cam_thread.isRunning():
                 self.cam_thread = QThread()
                 self.cam_worker = CameraWorker(self.driver)
                 self.cam_worker.moveToThread(self.cam_thread)
                 self.cam_worker.frame_ready.connect(self.update_frame)
+
+                try:
+                    self.start_worker_signal.disconnect()
+                except TypeError: pass
+
                 self.start_worker_signal.connect(self.cam_worker.start_acquire)
                 self.cam_thread.start()
                 
@@ -354,11 +370,17 @@ class InterferometerGUI(QMainWindow):
         
         # If live view was running before burst, attempt to restart it
         if self._live_was_running_before_burst:
-            if not self.cam_thread.isRunning():
+            if self.cam_thread is None or not self.cam_thread.isRunning():
                 self.cam_thread = QThread()
                 self.cam_worker = CameraWorker(self.driver)
                 self.cam_worker.moveToThread(self.cam_thread)
                 self.cam_worker.frame_ready.connect(self.update_frame)
+
+                try:
+                    self.start_worker_signal.disconnect()
+                except TypeError:
+                    pass
+
                 self.start_worker_signal.connect(self.cam_worker.start_acquire)
                 self.cam_thread.start()
                 
@@ -481,8 +503,6 @@ class InterferometerGUI(QMainWindow):
                 self.cam_thread.quit()
                 if not self.cam_thread.wait(2000):
                     self.logger.warning("Camera thread did not exit cleanly")
-                    self.cam_thread.terminate()
-                    self.cam_thread.wait()
             
             # Now safely restart thread and start acquiring
             if not self.cam_thread.isRunning():
@@ -494,6 +514,8 @@ class InterferometerGUI(QMainWindow):
         else:
             # User wants to stop live view
             self.cam_worker.stop_acquire()
+            self.cam_thread.quit()
+            self.cam_thread.wait(2000)
             self.controls.btn_live.setText("Start Live View")
             self.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
 
@@ -512,6 +534,8 @@ class InterferometerGUI(QMainWindow):
         cp.spin_exp.setValue(c['camera']['exposure_ms'])
         cp.spin_gain.setValue(c['camera']['gain_db'])
         cp.chk_transpose.setChecked(c['camera']['transpose'])
+
+        self.saturation_threshold = c['camera'].get('saturation_threshold', 4090)
         
         cp.spin_lambda.setValue(c['physics']['wavelength_nm'])
         cp.spin_slit.setValue(c['physics']['slit_separation_mm'])
@@ -520,7 +544,8 @@ class InterferometerGUI(QMainWindow):
         self.live_widget.set_roi_rows(c['roi']['rows_min'], c['roi']['rows_max'])
         self.live_widget.set_roi_width(c['roi']['fit_width_min'], c['roi']['fit_width_max'])
         cp.chk_autocenter.setChecked(c['roi']['auto_center'])
-        
+        min_sig = c.get('analysis', {}).get('min_signal_threshold', 50.0)
+        self.fitter.min_signal = min_sig
         self.update_physics()
 
     def closeEvent(self, a0: QCloseEvent | None) -> None:
@@ -530,7 +555,9 @@ class InterferometerGUI(QMainWindow):
         state = {
             "camera": { "exposure_ms": self.controls.spin_exp.value(), 
                         "gain_db": self.controls.spin_gain.value(),
-                        "transpose": self.controls.chk_transpose.isChecked() },
+                        "transpose": self.controls.chk_transpose.isChecked(),
+                         "saturation_threshold": self.cfg.get('camera', {}).get('saturation_threshold', 4090) },
+            "analysis": { "min_signal_threshold": self.cfg.get('analysis', {}).get('min_signal_threshold', 50.0) },
             "physics": { "wavelength_nm": self.controls.spin_lambda.value(), 
                          "slit_separation_mm": self.controls.spin_slit.value(),
                          "distance_m": self.controls.spin_dist.value() },
@@ -542,15 +569,21 @@ class InterferometerGUI(QMainWindow):
         }
         self.config_manager.save(state)
         
-        # Shutdown
-        self.cam_worker.stop_acquire()
-        self.cam_thread.quit()
-        self.cam_thread.wait()
-        
+        # Shutdown Camera Worker safely
+        if self.cam_worker is not None:
+            self.cam_worker.stop_acquire()
+    
+    # Shutdown Camera Thread safely
+        if self.cam_thread is not None:
+            self.cam_thread.quit()
+            self.cam_thread.wait()
+    
         self.an_thread.quit()
         self.an_thread.wait()
-        
+    
+    # Close driver last
         if hasattr(self, 'driver'): 
             self.driver.close()
+        
         if a0 is not None:
             a0.accept()

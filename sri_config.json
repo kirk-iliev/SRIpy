@@ -1,8 +1,12 @@
 {
     "camera": {
-        "exposure_ms": 5.5,
-        "gain_db": 6.0,
-        "transpose": false
+        "exposure_ms": 2.5,
+        "gain_db": 0.0,
+        "transpose": false,
+        "saturation_threshold": 4090
+    },
+    "analysis": {
+        "min_signal_threshold": 50
     },
     "physics": {
         "wavelength_nm": 550.0,
@@ -12,8 +16,8 @@
     "roi": {
         "rows_min": 304.0,
         "rows_max": 912.0,
-        "fit_width_min": 464.0,
-        "fit_width_max": 1432.0,
+        "fit_width_min": 483.0,
+        "fit_width_max": 1451.0,
         "auto_center": true
     }
 }

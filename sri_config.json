@@ -1,7 +1,7 @@
 {
     "camera": {
-        "exposure_ms": 3.5,
-        "gain_db": 7.0,
+        "exposure_ms": 4.5,
+        "gain_db": 10.0,
         "transpose": false,
         "saturation_threshold": 4090
     },
@@ -16,8 +16,8 @@
     "roi": {
         "rows_min": 306.91642288308844,
         "rows_max": 914.9164228830884,
-        "fit_width_min": 739.5,
-        "fit_width_max": 1260.5,
+        "fit_width_min": 693.5,
+        "fit_width_max": 1214.5,
         "auto_center": true
     }
 }

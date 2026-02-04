@@ -14,7 +14,7 @@ from vmbpy import (
 )
 from typing import Any, cast
 
-class MantaDriver: 
+class MantaDriver:
 
     def __init__(self, camera_id: Optional[str] = None):
         self.camera_id = camera_id
@@ -22,7 +22,7 @@ class MantaDriver:
         self._vmb: Optional[VmbSystem] = None
         self._cam: Optional[Camera] = None
         self._feat_trigger_software = None
-        
+
         # Streaming State
         self._is_streaming = False
         self._frame_queue = queue.Queue(maxsize=5)
@@ -55,9 +55,9 @@ class MantaDriver:
             logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
             self.logger = logging.getLogger(__name__)
             self.logger.info(f"Connected to: {self._cam.get_name()} (ID: {self._cam.get_id()})")  # type: ignore
-            
+
             self._configure_defaults()
-            
+
         except Exception as e:
             self.logger.error(f"Connection failed: {e}")
             self.close()
@@ -66,14 +66,14 @@ class MantaDriver:
     def close(self):
         """Safely closes camera and system resources."""
         self.stop_stream() # Ensure stream is stopped first
-        
+
         if self._cam:
             try:
                 self._cam.__exit__(None, None, None)  # type: ignore
             except Exception as e:
                 self.logger.error(f"Error closing camera: {e}")
             self._cam = None
-            
+
         if self._vmb:
             try:
                 self._vmb.__exit__(None, None, None)  # type: ignore
@@ -87,13 +87,13 @@ class MantaDriver:
         if not self._cam:
             return
 
-        # Optimize Packet Size 
+        # Optimize Packet Size
         for feature_name in ["GevSCPSPacketSize", "PacketSize"]:
             feat = self._get_feature(feature_name)
             if feat:
                 try:
                     feat.set(1400)  # type: ignore
-                    break 
+                    break
                 except VmbFeatureError:
                     pass
 
@@ -101,15 +101,15 @@ class MantaDriver:
         try:
             trigger_mode = self._get_feature("TriggerMode")
             trigger_source = self._get_feature("TriggerSource")
-            
+
             if trigger_mode and trigger_source:
                 trigger_mode.set('On')  # type: ignore
                 trigger_source.set('Software')  # type: ignore
-                
+
             self._feat_trigger_software = self._get_feature("TriggerSoftware")
             if not self._feat_trigger_software:
                 self.logger.warning("TriggerSoftware feature not found. Acquisition may fail.")
-                
+
         except VmbFeatureError as e:
             self.logger.error(f"Error configuring trigger: {e}")
 
@@ -137,14 +137,15 @@ class MantaDriver:
     @exposure.setter
     def exposure(self, exposure_time_s: float):
         feat = self._get_feature("ExposureTimeAbs") or self._get_feature("ExposureTime")
-        if feat:
-            try:
-                min_exp, max_exp = feat.get_range()  # type: ignore
-                req_us = exposure_time_s * 1_000_000.0
-                target_us = max(min_exp, min(max_exp, req_us))
-                feat.set(target_us)  # type: ignore
-            except VmbFeatureError as e:
-                self.logger.error(f"Failed to set exposure: {e}")
+        with self._operation_lock:
+            if feat:
+                try:
+                    min_exp, max_exp = feat.get_range()  # type: ignore
+                    req_us = exposure_time_s * 1_000_000.0
+                    target_us = max(min_exp, min(max_exp, req_us))
+                    feat.set(target_us)  # type: ignore
+                except VmbFeatureError as e:
+                    self.logger.error(f"Failed to set exposure: {e}")
 
     @property
     def gain(self) -> float:
@@ -155,13 +156,14 @@ class MantaDriver:
     @gain.setter
     def gain(self, gain_db: float):
         feat = self._get_feature("Gain")
-        if feat:
-            try:
-                min_g, max_g = feat.get_range()  # type: ignore
-                target = max(min_g, min(max_g, gain_db))
-                feat.set(target)  # type: ignore
-            except VmbFeatureError as e:
-                self.logger.error(f"Failed to set gain: {e}")
+        with self._operation_lock:
+            if feat:
+                try:
+                    min_g, max_g = feat.get_range()  # type: ignore
+                    target = max(min_g, min(max_g, gain_db))
+                    feat.set(target)  # type: ignore
+                except VmbFeatureError as e:
+                    self.logger.error(f"Failed to set gain: {e}")
 
     def start_stream(self):
         """Prepares the camera for continuous acquisition."""
@@ -178,7 +180,7 @@ class MantaDriver:
                     # Check shutdown flag under lock to prevent race condition
                     with self._stream_lock:
                         accepting = self._accepting_frames
-                    
+
                     # Skip frames if stream is shutting down
                     if not accepting:
                         try:
@@ -186,7 +188,7 @@ class MantaDriver:
                         except Exception:
                             pass
                         return
-                    
+
                     try:
                         if frame.get_status() == FrameStatus.Complete:
                             # If queue is full, discard oldest frame to make room for newest
@@ -195,7 +197,7 @@ class MantaDriver:
                                     self._frame_queue.get_nowait()
                                 except queue.Empty:
                                     pass
-                            
+
                             arr = frame.as_numpy_ndarray().copy()
                             # Use block=True with timeout to ensure frame is queued
                             # If this fails, the frame is simply not captured (caller will timeout)
@@ -229,19 +231,19 @@ class MantaDriver:
             with self._stream_lock:
                 if not self._is_streaming or not self._cam:
                     return
-                
+
                 try:
                     # Signal frame handler to stop accepting frames
                     self._accepting_frames = False
-                    
+
                     # Stop the camera stream
                     self._cam.stop_streaming()
                     self._is_streaming = False
-                    
+
                     with self._frame_queue.mutex:
                         self._frame_queue.queue.clear()
                         self._frame_queue.unfinished_tasks = 0
-                    
+
                     self._frame_queue.put(None)
                     self.logger.info("Continuous streaming stopped & frame queue cleared.")
 
@@ -250,14 +252,14 @@ class MantaDriver:
 
     def acquire_frame(self, timeout: float = 3.0) -> Optional[np.ndarray]:
         """
-        Acquires a single frame. 
+        Acquires a single frame.
         If start_stream() was called, pulls from the live queue.
         If not, performs a one-off capture (snapshot mode).
-        
+
         Returns:
             numpy.ndarray: Image data if successful
             None: Only on timeout (not on other errors)
-        
+
         Raises:
             RuntimeError: Camera not connected
             Exception: Vimba errors, hardware issues (logged with context)
@@ -269,7 +271,7 @@ class MantaDriver:
         # Check streaming state under lock to avoid race conditions
         with self._stream_lock:
             is_streaming = self._is_streaming
-        
+
         if is_streaming:
             try:
                 # Fire Software Trigger
@@ -279,7 +281,7 @@ class MantaDriver:
                     except Exception as e:
                         self.logger.warning(f"Trigger failed: {e}", exc_info=True)
                         # Continue anyway; frame might already be in queue
-                
+
                 # Wait for result in queue
                 frame = self._frame_queue.get(block=True, timeout=timeout)
 
@@ -287,12 +289,12 @@ class MantaDriver:
                     self.logger.debug(f"Acquire returned None frame (stream stopped)")
                     return None
                 return frame
-                
+
             except queue.Empty:
                 # Timeout is expected in some conditions; return None without logging as error
                 self.logger.debug(f"Acquire timeout after {timeout}s (Streaming mode)")
                 return None
-                
+
             except Exception as e:
                 # Other exceptions are NOT expected; log with full context
                 self.logger.error(
@@ -312,19 +314,19 @@ class MantaDriver:
     def _acquire_single_snapshot(self, timeout: float) -> Optional[np.ndarray]:
         """
         Legacy helper for one-off snapshots (non-streaming mode).
-        
+
         Args:
             timeout: Seconds to wait for frame
-        
+
         Returns:
             numpy.ndarray: Image data if successful
             None: On timeout only
-        
+
         Raises:
             VmbCameraError, VmbFeatureError: Vimba errors (logged)
         """
         q: queue.Queue = queue.Queue(maxsize=1)
-        
+
         def handler(cam, stream, frame):
             """Frame callback for snapshot acquisition."""
             try:
@@ -353,7 +355,7 @@ class MantaDriver:
         try:
             # Start streaming for single frame capture
             self._cam.start_streaming(handler=handler, buffer_count=1)  # type: ignore
-            
+
             # Trigger capture
             if self._feat_trigger_software:
                 try:
@@ -364,17 +366,17 @@ class MantaDriver:
                         exc_info=True
                     )
                     # Continue anyway; frame might arrive from auto-triggering
-            
+
             # Wait for frame with timeout
             try:
                 frame_data = q.get(block=True, timeout=timeout)
                 self.logger.debug(f"Snapshot acquired successfully ({frame_data.shape})")
                 return frame_data
-                
+
             except queue.Empty:
                 self.logger.debug(f"Snapshot timeout after {timeout}s")
                 return None
-                
+
         except VmbCameraError as e:
             self.logger.error(
                 f"Vimba camera error during snapshot: {type(e).__name__}: {e}",

@@ -2,48 +2,54 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import Qt, pyqtSignal
 import pyqtgraph as pg
 from typing import Tuple
+import numpy as np
 
 class LiveMonitorWidget(QWidget):
     # Signals to communicate with Main Window
-    roi_changed = pyqtSignal()      
+    roi_changed = pyqtSignal()
     roi_drag_start = pyqtSignal()   # Emitted when user is actively dragging
     roi_drag_end = pyqtSignal()     # Emitted when user releases the mouse
 
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout(self)
-        
+
         # Camera Frame Plot
         self.image_container = pg.GraphicsLayoutWidget()
         self.image_plot = self.image_container.addPlot(title="Camera Frame")  # type: ignore
         self.image_item = pg.ImageItem()
         self.image_plot.addItem(self.image_item)
-        
+
+        cmap = pg.colormap.get('jet')
+        if cmap is not None:
+            lut = cmap.getLookupTable(0.0, 1.0, 256)
+            self.image_item.setLookupTable(np.array(lut))
+
         # ROI: Vertical Binning Region
         self.roi_rows = pg.LinearRegionItem(orientation='horizontal', brush=(0, 50, 255, 50))  # type: ignore
-        self.roi_rows.setRegion([400, 800]) 
+        self.roi_rows.setRegion([400, 800])
         self.image_plot.addItem(self.roi_rows)
-        
+
         # Lineout Plot
         self.lineout_plot = pg.PlotWidget(title="Interference Profile")
         self.lineout_plot.showGrid(x=True, y=True)
         self.curve_raw = self.lineout_plot.plot(pen=pg.mkPen('w', width=2), name="Raw")
         self.curve_fit = self.lineout_plot.plot(pen=pg.mkPen('r', width=3, style=Qt.PenStyle.DashLine), name="Fit")
-        
+
         # ROI: Fit Width Region
         self.roi_fit_width = pg.LinearRegionItem(orientation='vertical', brush=(0, 255, 0, 30))  # type: ignore
-        self.roi_fit_width.setRegion([800, 1200]) 
+        self.roi_fit_width.setRegion([800, 1200])
         self.lineout_plot.addItem(self.roi_fit_width)
 
-        # sigRegionChanged fires *during* the drag. 
+        # sigRegionChanged fires *during* the drag.
         # We use this to trigger 'roi_drag_start' which sets user_is_interacting=True
         self.roi_fit_width.sigRegionChanged.connect(self._handle_region_change)
-        
+
         # sigRegionChangeFinished fires on *release*.
         # This triggers 'roi_drag_end' which sets user_is_interacting=False
         # Use a lambda to drop the region args and emit our simple signal
         self.roi_fit_width.sigRegionChangeFinished.connect(lambda: self.roi_drag_end.emit())
-        
+
         layout.addWidget(self.image_container, stretch=3)
         layout.addWidget(self.lineout_plot, stretch=2)
 
@@ -61,7 +67,7 @@ class LiveMonitorWidget(QWidget):
 
     def update_fit(self, x_data, y_data):
         self.curve_fit.setData(x_data, y_data)
-        
+
     def get_roi_rows(self) -> Tuple[float, float]:
         return self.roi_rows.getRegion()  # type: ignore
 

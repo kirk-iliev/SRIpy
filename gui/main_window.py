@@ -7,7 +7,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import numpy as np
 import logging, time
-from typing import Tuple
+from typing import Tuple, Optional
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
@@ -35,6 +35,14 @@ from core.acquisition import BurstWorker
 class InterferometerGUI(QMainWindow):
     request_fit = pyqtSignal(object, object)
     start_worker_signal = pyqtSignal()
+    
+    # Type annotations for instance attributes
+    cam_thread: Optional[QThread]
+    cam_worker: Optional[CameraWorker]
+    an_thread: Optional[QThread]
+    an_worker: Optional[AnalysisWorker]
+    burst_thread: Optional[QThread]
+    burst_worker: Optional['BurstWorker']
 
     def __init__(self):
         super().__init__()
@@ -58,6 +66,14 @@ class InterferometerGUI(QMainWindow):
         # State tracking for burst vs live view
         self._live_was_running_before_burst = False
         self._burst_is_running = False
+        
+        # Thread and worker attributes - will be initialized in setup_threads()
+        self.cam_thread: Optional[QThread] = None
+        self.cam_worker: Optional[CameraWorker] = None
+        self.an_thread: Optional[QThread] = None
+        self.an_worker: Optional[AnalysisWorker] = None
+        self.burst_thread: Optional[QThread] = None
+        self.burst_worker: Optional[BurstWorker] = None
 
         # Init Hardware
         try:
@@ -232,10 +248,10 @@ class InterferometerGUI(QMainWindow):
 
     def acquire_background(self):
         """Pauses stream safely, grabs a frame, saves as background, then restarts."""
-        was_live = self.cam_worker._is_running # Check flag before we stop it
+        was_live = self.cam_worker._is_running if self.cam_worker is not None else False # Check flag before we stop it
 
         try:
-            if was_live:
+            if was_live and self.cam_worker is not None and self.cam_thread is not None:
                 self.controls.btn_live.setChecked(False) # Update UI
                 self.cam_worker.stop_acquire()           # Tell loop to break
                 
@@ -276,10 +292,10 @@ class InterferometerGUI(QMainWindow):
 
     def start_burst_acquisition(self):
         # Track whether live view was active before we started burst
-        self._live_was_running_before_burst = self.cam_worker._is_running
+        self._live_was_running_before_burst = self.cam_worker._is_running if self.cam_worker is not None else False
         self._burst_is_running = True
         
-        if self._live_was_running_before_burst:
+        if self._live_was_running_before_burst and self.cam_worker is not None and self.cam_thread is not None:
             # Cleanly stop live view acquisition
             self.cam_worker.stop_acquire()
             self.cam_thread.quit()
@@ -395,7 +411,8 @@ class InterferometerGUI(QMainWindow):
             self.controls.btn_live.setChecked(False)
         
         self._live_was_running_before_burst = False
-        self.burst_thread.quit()
+        if self.burst_thread is not None:
+            self.burst_thread.quit()
 
     def save_full_dataset(self):
         try:
@@ -496,7 +513,8 @@ class InterferometerGUI(QMainWindow):
                 self.live_widget.set_roi_width(new_min, new_max)
 
     def reset_rois(self):
-        if not hasattr(self, 'current_raw_image'): return
+        if not hasattr(self, 'current_raw_image') or self.current_raw_image is None:
+            return
         img = self.current_raw_image
         if self.controls.chk_transpose.isChecked():
             h, w = img.shape[1], img.shape[0]
@@ -516,24 +534,26 @@ class InterferometerGUI(QMainWindow):
                 return
             
             # Ensure thread is fully stopped before restarting
-            if self.cam_thread.isRunning():
-                self.cam_worker.stop_acquire()
-                self.cam_thread.quit()
-                if not self.cam_thread.wait(2000):
-                    self.logger.warning("Camera thread did not exit cleanly")
-            
-            # Now safely restart thread and start acquiring
-            if not self.cam_thread.isRunning():
-                self.cam_thread.start()
-            
-            self.controls.btn_live.setText("Stop Live View")
-            self.controls.btn_live.setStyleSheet("background-color: red; color: white; font-weight: bold;")
-            self.start_worker_signal.emit()
+            if self.cam_thread is not None and self.cam_worker is not None:
+                if self.cam_thread.isRunning():
+                    self.cam_worker.stop_acquire()
+                    self.cam_thread.quit()
+                    if not self.cam_thread.wait(2000):
+                        self.logger.warning("Camera thread did not exit cleanly")
+                
+                # Now safely restart thread and start acquiring
+                if not self.cam_thread.isRunning():
+                    self.cam_thread.start()
+                
+                self.controls.btn_live.setText("Stop Live View")
+                self.controls.btn_live.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+                self.start_worker_signal.emit()
         else:
             # User wants to stop live view
-            self.cam_worker.stop_acquire()
-            self.cam_thread.quit()
-            self.cam_thread.wait(2000)
+            if self.cam_worker is not None and self.cam_thread is not None:
+                self.cam_worker.stop_acquire()
+                self.cam_thread.quit()
+                self.cam_thread.wait(2000)
             self.controls.btn_live.setText("Start Live View")
             self.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
 
@@ -603,7 +623,7 @@ class InterferometerGUI(QMainWindow):
         if self.cam_worker is not None:
             self.cam_worker.stop_acquire()
     
-    # Shutdown Camera Thread safely
+        # Shutdown Camera Thread safely
         if self.cam_thread is not None:
             self.cam_thread.quit()
             if not self.cam_thread.wait(2000):
@@ -613,10 +633,10 @@ class InterferometerGUI(QMainWindow):
     
         if self.an_thread is not None:
             self.an_thread.quit()
-        if not self.an_thread.wait(2000):
-            self.logger.warning("Analysis thread did not exit cleanly; forcing termination.")
-            self.an_thread.terminate()
-            self.an_thread.wait(1000)
+            if not self.an_thread.wait(2000):
+                self.logger.warning("Analysis thread did not exit cleanly; forcing termination.")
+                self.an_thread.terminate()
+                self.an_thread.wait(1000)
     
     # Close driver last
         if hasattr(self, 'driver'): 

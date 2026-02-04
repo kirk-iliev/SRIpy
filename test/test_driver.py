@@ -8,8 +8,8 @@ def main():
     try:
         driver.connect()
         # Increase exposure to 500ms (0.5s) to gather more light
-        driver.set_exposure(0.5) 
-        driver.set_gain(20) # Crank the gain just for this test
+        driver.exposure = 0.5 
+        driver.gain = 20  # Crank the gain just for this test
         
         print("Acquiring image...")
         img = driver.acquire_frame()

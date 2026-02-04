@@ -8,8 +8,8 @@ def main():
     driver = MantaDriver() # Add ID if needed
     driver.connect()
     
-    driver.set_exposure(0.005) # 5ms
-    driver.set_gain(0)
+    driver.exposure = 0.005  # 5ms
+    driver.gain = 0
     
     print("Acquiring image...")
     img = driver.acquire_frame()

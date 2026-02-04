@@ -11,11 +11,8 @@ class AnalysisWorker(QObject):
         self.logger = logging.getLogger(__name__)
 
     def process_fit(self, y_data, x_data):
-        # DEBUG LOG: Confirm we entered the thread
-        # self.logger.debug("Worker received fit request") 
         
         try:
-            # If the app hangs HERE, it's the OpenMP deadlock (Fixed by Step 1)
             fit_result = self.fitter.fit(y_data)
             self.result_ready.emit(fit_result, x_data)
             

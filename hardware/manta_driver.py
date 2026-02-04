@@ -28,6 +28,7 @@ class MantaDriver:
         self._frame_queue = queue.Queue(maxsize=5)
         self._stream_lock = threading.Lock()  # Protects streaming state transitions
         self._accepting_frames = False  # Flag to discard in-flight frames during shutdown
+        self._operation_lock = threading.Lock()
 
     def connect(self):
         """Initializes Vimba and connects to the camera."""
@@ -164,82 +165,88 @@ class MantaDriver:
 
     def start_stream(self):
         """Prepares the camera for continuous acquisition."""
-        with self._stream_lock:
-            if self._is_streaming or not self._cam:
-                return
-            with self._frame_queue.mutex:
-                self._frame_queue.queue.clear()
-                self._frame_queue.unfinished_tasks = 0
-
-            # Define the handler inside to capture 'self'
-            def frame_handler(cam: Camera, stream: Stream, frame: Frame):
-                # Skip frames if stream is shutting down
-                if not self._accepting_frames:
-                    try:
-                        cam.queue_frame(frame)
-                    except Exception:
-                        pass
+        with self._operation_lock:
+            with self._stream_lock:
+                if self._is_streaming or not self._cam:
                     return
-                
-                try:
-                    if frame.get_status() == FrameStatus.Complete:
-                        # If queue is full, discard oldest frame to make room for newest
-                        if self._frame_queue.full():
-                            try:
-                                self._frame_queue.get_nowait()
-                            except queue.Empty:
-                                pass
-                        
-                        arr = frame.as_numpy_ndarray().copy()
-                        # Use block=True with timeout to ensure frame is queued
-                        # If this fails, the frame is simply not captured (caller will timeout)
-                        try:
-                            self._frame_queue.put(arr, block=True, timeout=0.1)
-                        except queue.Full:
-                            self.logger.debug("Frame queue full, frame dropped")
-                except Exception as e:
-                    self.logger.debug(f"Frame handler conversion error: {e}")
-                finally:
-                    # Always re-queue frame to camera to prevent buffer starvation
-                    try:
-                        cam.queue_frame(frame)
-                    except Exception as e:
-                        self.logger.error(f"Failed to re-queue frame: {e}", exc_info=True)
-
-            try:
-                # Enable frame acceptance before starting stream
-                self._accepting_frames = True
-                # Start streaming with 5 buffers to prevent dropped frames
-                self._cam.start_streaming(handler=frame_handler, buffer_count=5)  # type: ignore
-                self._is_streaming = True
-                self.logger.info("Continuous streaming started.")
-            except Exception as e:
-                self.logger.error(f"Failed to start stream: {e}")
-                self._accepting_frames = False
-
-    def stop_stream(self):
-        """Stops continuous acquisition."""
-        with self._stream_lock:
-            if not self._is_streaming or not self._cam:
-                return
-            
-            try:
-                # Signal frame handler to stop accepting frames
-                self._accepting_frames = False
-                
-                # Stop the camera stream
-                self._cam.stop_streaming()
-                self._is_streaming = False
-                
                 with self._frame_queue.mutex:
                     self._frame_queue.queue.clear()
                     self._frame_queue.unfinished_tasks = 0
-                
-                self._frame_queue.put(None)
-                self.logger.info("Continuous streaming stopped & frame queue cleared.")
 
-            except Exception as e:
-                self.logger.error(f"Failed to stop stream: {e}", exc_info=True)
+                # Define the handler inside to capture 'self'
+                def frame_handler(cam: Camera, stream: Stream, frame: Frame):
+                    # Check shutdown flag under lock to prevent race condition
+                    with self._stream_lock:
+                        accepting = self._accepting_frames
+                    
+                    # Skip frames if stream is shutting down
+                    if not accepting:
+                        try:
+                            cam.queue_frame(frame)
+                        except Exception:
+                            pass
+                        return
+                    
+                    try:
+                        if frame.get_status() == FrameStatus.Complete:
+                            # If queue is full, discard oldest frame to make room for newest
+                            if self._frame_queue.full():
+                                try:
+                                    self._frame_queue.get_nowait()
+                                except queue.Empty:
+                                    pass
+                            
+                            arr = frame.as_numpy_ndarray().copy()
+                            # Use block=True with timeout to ensure frame is queued
+                            # If this fails, the frame is simply not captured (caller will timeout)
+                            try:
+                                self._frame_queue.put(arr, block=True, timeout=0.1)
+                            except queue.Full:
+                                self.logger.debug("Frame queue full, frame dropped")
+                    except Exception as e:
+                        self.logger.debug(f"Frame handler conversion error: {e}")
+                    finally:
+                        # Always re-queue frame to camera to prevent buffer starvation
+                        try:
+                            cam.queue_frame(frame)
+                        except Exception as e:
+                            self.logger.error(f"Failed to re-queue frame: {e}", exc_info=True)
+
+                try:
+                    # Enable frame acceptance before starting stream
+                    self._accepting_frames = True
+                    # Start streaming with 5 buffers to prevent dropped frames
+                    self._cam.start_streaming(handler=frame_handler, buffer_count=5)  # type: ignore
+                    self._is_streaming = True
+                    self.logger.info("Continuous streaming started.")
+                except Exception as e:
+                    self.logger.error(f"Failed to start stream: {e}")
+                    self._accepting_frames = False
+
+    def stop_stream(self):
+        """Stops continuous acquisition."""
+        with self._operation_lock:
+            with self._stream_lock:
+                if not self._is_streaming or not self._cam:
+                    return
+                
+                try:
+                    # Signal frame handler to stop accepting frames
+                    self._accepting_frames = False
+                    
+                    # Stop the camera stream
+                    self._cam.stop_streaming()
+                    self._is_streaming = False
+                    
+                    with self._frame_queue.mutex:
+                        self._frame_queue.queue.clear()
+                        self._frame_queue.unfinished_tasks = 0
+                    
+                    self._frame_queue.put(None)
+                    self.logger.info("Continuous streaming stopped & frame queue cleared.")
+
+                except Exception as e:
+                    self.logger.error(f"Failed to stop stream: {e}", exc_info=True)
 
     def acquire_frame(self, timeout: float = 3.0) -> Optional[np.ndarray]:
         """

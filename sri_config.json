@@ -1,6 +1,6 @@
 {
     "camera": {
-        "exposure_ms": 2.5,
+        "exposure_ms": 3.0,
         "gain_db": 0.0,
         "transpose": false,
         "saturation_threshold": 4090
@@ -14,10 +14,10 @@
         "distance_m": 0.3
     },
     "roi": {
-        "rows_min": 304.0,
-        "rows_max": 912.0,
-        "fit_width_min": 483.0,
-        "fit_width_max": 1451.0,
+        "rows_min": 306.91642288308844,
+        "rows_max": 914.9164228830884,
+        "fit_width_min": 476.0,
+        "fit_width_max": 1444.0,
         "auto_center": true
     }
 }

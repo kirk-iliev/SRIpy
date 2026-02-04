@@ -1,8 +1,12 @@
 from concurrent.futures import thread
 import sys
 import os
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import numpy as np
-import logging
+import logging, time
 from typing import Tuple
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QFileDialog, QMessageBox
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -27,6 +31,7 @@ from core.data_model import DataManager, ExperimentMetadata, ExperimentResult
 from analysis.analysis_worker import AnalysisWorker
 from core.acquisition import BurstWorker
 
+
 class InterferometerGUI(QMainWindow):
     request_fit = pyqtSignal(object, object)
     start_worker_signal = pyqtSignal()
@@ -44,6 +49,11 @@ class InterferometerGUI(QMainWindow):
         self.user_is_interacting = False
         self.worker_is_busy = False
         self.logger = logging.getLogger(__name__)
+
+        self.current_raw_image = None
+        self.current_lineout = None
+        self.last_fit_result = None
+        self.last_fit_request_time = 0.0
         
         # State tracking for burst vs live view
         self._live_was_running_before_burst = False
@@ -179,15 +189,23 @@ class InterferometerGUI(QMainWindow):
                 self.run_autocenter(lineout, w)
 
             # Trigger Analysis
+            current_time = time.time()
+
+            if self.worker_is_busy and (current_time - self.last_fit_request_time > 3.0):
+                # If worker is busy for over 1 second, reset flag (stuck case)
+                self.logger.warning("Analysis worker stuck; resetting busy flag.")
+                self.worker_is_busy = False
             if not self.worker_is_busy:
                 roi_width: Tuple[float, float] = self.live_widget.get_roi_width()
                 x_min, x_max = int(roi_width[0]), int(roi_width[1])
                 x_min, x_max = max(0, x_min), min(w, x_max)
                 if x_max > x_min:
                     self.worker_is_busy = True
+                    self.last_fit_request_time = current_time
                     # Pass numpy arrays to the analysis worker (avoid converting to lists)
                     self.request_fit.emit(lineout[x_min:x_max], np.arange(x_min, x_max))
-            
+                else: 
+                    self.logger.debug("Invalid ROI width for fitting; skipping analysis.")
             # Update saturation status in UI
             if is_saturated:
                 self.controls.lbl_sat.setText("SATURATED!")
@@ -318,6 +336,25 @@ class InterferometerGUI(QMainWindow):
         
         self.burst_thread.start()
 
+    def _restart_camera_worker(self):
+        """Helper to safely recreate camera worker and thread after burst."""
+        # Ensure worker is fully cleaned before recreation
+        self.cam_thread = QThread()
+        self.cam_worker = CameraWorker(self.driver)
+        self.cam_worker.moveToThread(self.cam_thread)
+        self.cam_worker.frame_ready.connect(self.update_frame)
+
+        # Safely disconnect all previous connections; ignore if none exist
+        try:
+            self.start_worker_signal.disconnect()
+        except TypeError:
+            # Signal has no connections, which is expected on first run
+            self.logger.debug("start_worker_signal had no prior connections")
+
+        self.start_worker_signal.connect(self.cam_worker.start_acquire)
+        self.cam_thread.start()
+        self.start_worker_signal.emit()
+
     def handle_burst_finished(self, res):
         """Handle burst completion and restore UI/live view state."""
         self._burst_is_running = False
@@ -332,27 +369,9 @@ class InterferometerGUI(QMainWindow):
         
         # Restore live view if it was running before burst
         if self._live_was_running_before_burst:
-            # Ensure we have a fresh thread
-            if self.cam_thread is None or not self.cam_thread.isRunning():
-                self.cam_thread = QThread()
-                self.cam_worker = CameraWorker(self.driver)
-                self.cam_worker.moveToThread(self.cam_thread)
-                self.cam_worker.frame_ready.connect(self.update_frame)
-
-                try:
-                    self.start_worker_signal.disconnect()
-                except TypeError: pass
-
-                self.start_worker_signal.connect(self.cam_worker.start_acquire)
-                self.cam_thread.start()
-                
-                # Signal the worker to start acquiring
-                self.start_worker_signal.emit()
-            
-            # Update button state to match internal state
+            self._restart_camera_worker()
             self.controls.btn_live.setChecked(True)
         else:
-            # Live view was not running, just enable the button
             self.controls.btn_live.setChecked(False)
         
         self.controls.btn_live.setEnabled(True)
@@ -370,22 +389,7 @@ class InterferometerGUI(QMainWindow):
         
         # If live view was running before burst, attempt to restart it
         if self._live_was_running_before_burst:
-            if self.cam_thread is None or not self.cam_thread.isRunning():
-                self.cam_thread = QThread()
-                self.cam_worker = CameraWorker(self.driver)
-                self.cam_worker.moveToThread(self.cam_thread)
-                self.cam_worker.frame_ready.connect(self.update_frame)
-
-                try:
-                    self.start_worker_signal.disconnect()
-                except TypeError:
-                    pass
-
-                self.start_worker_signal.connect(self.cam_worker.start_acquire)
-                self.cam_thread.start()
-                
-                self.start_worker_signal.emit()
-            
+            self._restart_camera_worker()
             self.controls.btn_live.setChecked(True)
         else:
             self.controls.btn_live.setChecked(False)
@@ -404,9 +408,10 @@ class InterferometerGUI(QMainWindow):
                 distance_m = self.controls.spin_dist.value()
             )
             
-            if not hasattr(self, 'last_fit_result') or not self.last_fit_result:
-                QMessageBox.warning(self, "No Data", "No fit result to save.")
-                return
+            # Gather Result
+            if self.current_lineout is None or self.last_fit_result is None:
+                raise ValueError("No analysis results available to save.")
+            
 
             lineout_data = self.current_lineout.tolist() if (hasattr(self, 'current_lineout') and isinstance(self.current_lineout, np.ndarray)) else (list(self.current_lineout) if hasattr(self, 'current_lineout') else [])
             fit_data = self.last_fit_result.fitted_curve.tolist() if (self.last_fit_result.fitted_curve is not None and isinstance(self.last_fit_result.fitted_curve, np.ndarray)) else (list(self.last_fit_result.fitted_curve) if self.last_fit_result.fitted_curve is not None else [])
@@ -427,7 +432,10 @@ class InterferometerGUI(QMainWindow):
 
     def save_mat_file(self):
         try:
-            if not hasattr(self, 'current_raw_image'): return
+            if self.current_raw_image is None:
+                raise ValueError("No image data available to save.")
+            if self.current_lineout is None or self.last_fit_result is None:
+                raise ValueError("No analysis results available to save.")
             
             meta = ExperimentMetadata(
                 exposure_s = self.controls.spin_exp.value() / 1000.0,
@@ -436,16 +444,15 @@ class InterferometerGUI(QMainWindow):
                 slit_separation_mm = self.controls.spin_slit.value(),
                 distance_m = self.controls.spin_dist.value()
             )
-            # Create a simple result if fit hasn't run yet
+            
             res_args = {}
-            if hasattr(self, 'last_fit_result') and self.last_fit_result:
+            if self.last_fit_result:
                 res_args['visibility'] = self.last_fit_result.visibility
                 res_args['sigma_microns'] = self.last_fit_result.sigma_microns
                 res_args['fit_y'] = self.last_fit_result.fitted_curve
             
             res = ExperimentResult(**res_args)
-            if hasattr(self, 'current_lineout'):
-                res.lineout_y = self.current_lineout.tolist() if isinstance(self.current_lineout, np.ndarray) else list(self.current_lineout)
+            res.lineout_y = self.current_lineout.tolist() if isinstance(self.current_lineout, np.ndarray) else list(self.current_lineout)
 
             dir_path = QFileDialog.getExistingDirectory(self, "Select Save Directory")
             if dir_path:
@@ -458,13 +465,24 @@ class InterferometerGUI(QMainWindow):
     # --- Helper Logic ---
 
     def ensure_roi_bounds(self, h, w):
+        
         roi_rows = self.live_widget.get_roi_rows()
-        r_min, r_max = int(roi_rows[0]), int(roi_rows[1])
-        if r_min > h or r_max < 0: self.live_widget.set_roi_rows(h*0.25, h*0.75)
+        r_min, r_max = roi_rows[0], roi_rows[1]
+        
+        new_r_min = max(0.0, min(r_min, h - 10.0))
+        new_r_max = max(new_r_min + 10.0, min(r_max, h))
+        
+        if (new_r_min != r_min) or (new_r_max != r_max):
+            self.live_widget.set_roi_rows(new_r_min, new_r_max)
         
         roi_width = self.live_widget.get_roi_width()
-        c_min, c_max = int(roi_width[0]), int(roi_width[1])
-        if c_min > w or c_max < 0: self.live_widget.set_roi_width(w*0.25, w*0.75)
+        c_min, c_max = roi_width[0], roi_width[1]
+        
+        new_c_min = max(0.0, min(c_min, w - 10.0))
+        new_c_max = max(new_c_min + 10.0, min(c_max, w))
+        
+        if (new_c_min != c_min) or (new_c_max != c_max):
+            self.live_widget.set_roi_width(new_c_min, new_c_max)
 
     def run_autocenter(self, lineout, w):
         peak_idx = int(np.argmax(lineout))
@@ -524,8 +542,20 @@ class InterferometerGUI(QMainWindow):
         self.fitter.slit_sep = self.controls.spin_slit.value() * 1e-3
         self.fitter.distance = self.controls.spin_dist.value()
 
-    def update_exposure(self, val): self.driver.exposure = val / 1000.0
-    def update_gain(self, val): self.driver.gain = val
+    def update_exposure(self, val): 
+        self.driver.exposure = val / 1000.0
+        self._check_background_validity()
+    def update_gain(self, val): 
+        self.driver.gain = val
+        self._check_background_validity()
+
+    def _check_background_validity(self):
+        """Automatically disables background subtraction if camera settings change."""
+        if self.controls.chk_bg.isChecked():
+            self.controls.chk_bg.setChecked(False)
+            self.logger.info("Background subtraction disabled due to camera setting change.")
+            self.background_frame = None
+
 
     def apply_config(self):
         c = self.cfg
@@ -576,10 +606,17 @@ class InterferometerGUI(QMainWindow):
     # Shutdown Camera Thread safely
         if self.cam_thread is not None:
             self.cam_thread.quit()
-            self.cam_thread.wait()
+            if not self.cam_thread.wait(2000):
+                self.logger.warning("Camera thread did not exit cleanly; forcing termination.")
+                self.cam_thread.terminate()
+                self.cam_thread.wait(1000)
     
-        self.an_thread.quit()
-        self.an_thread.wait()
+        if self.an_thread is not None:
+            self.an_thread.quit()
+        if not self.an_thread.wait(2000):
+            self.logger.warning("Analysis thread did not exit cleanly; forcing termination.")
+            self.an_thread.terminate()
+            self.an_thread.wait(1000)
     
     # Close driver last
         if hasattr(self, 'driver'): 

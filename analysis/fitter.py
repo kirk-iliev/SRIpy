@@ -17,6 +17,8 @@ class FitResult:
 
 class InterferenceFitter:
     def __init__(self, wavelength: float = 550e-9, slit_separation: float = 0.05, distance: float = 16.5, min_signal: float = 50.0):
+        import logging
+        self.logger = logging.getLogger(__name__)
         self.wavelength = wavelength
         self.slit_sep = slit_separation
         self.distance = distance
@@ -85,16 +87,16 @@ class InterferenceFitter:
                       bounds=(bounds_g_min, bounds_g_max), maxfev=1000)
             center_guess = popt_g[2]
         except RuntimeError as e:
-            # Fit failed to converge
-            print(f"Gaussian fit failed to converge: {e}")
+            # Fit failed to converge; fall back to peak position
+            self.logger.debug(f"Gaussian fit failed to converge: {e}")
             center_guess = peak_idx
         except ValueError as e:
             # Invalid bounds or parameters
-            print(f"Gaussian fit invalid parameters: {e}")
+            self.logger.debug(f"Gaussian fit invalid parameters: {e}")
             center_guess = peak_idx
         except Exception as e:
             # Catch any other unexpected errors
-            print(f"Gaussian fit unexpected error: {e}")
+            self.logger.warning(f"Gaussian fit unexpected error: {type(e).__name__}: {e}")
             center_guess = peak_idx
 
         # FFT (Find Frequency) 
@@ -113,8 +115,10 @@ class InterferenceFitter:
             dominant_idx = np.argmax(fft_mag)
             est_freq = xf[dominant_idx]
             est_sine_k = 2 * np.pi * est_freq
-        except:
-            est_sine_k = 0.3 # Fallback
+        except Exception as e:
+            # FFT calculation failed; use fallback frequency estimate
+            self.logger.debug(f"FFT frequency estimation failed: {type(e).__name__}: {e}")
+            est_sine_k = 0.3  # Fallback empirical value
 
         # Params: [baseline, amp, sinc_w, sinc_x0, visibility, sine_k, sine_phase]
         
@@ -186,10 +190,15 @@ class InterferenceFitter:
                 
 
     def calculate_sigma(self, visibility: float) -> float:
+        # Validate input: reject NaN, inf, and out-of-range values
+        if not np.isfinite(visibility):
+            self.logger.warning(f"calculate_sigma: received non-finite visibility: {visibility}")
+            return 0.0
         if visibility <= 0.001 or visibility >= 0.999:
             return 0.0
         coeff = (self.wavelength * self.distance) / (np.pi * self.slit_sep)
         try:
             return coeff * np.sqrt(0.5 * np.log(1.0 / visibility))
-        except ValueError:
+        except ValueError as e:
+            self.logger.warning(f"calculate_sigma: math domain error with visibility={visibility}: {e}")
             return 0.0

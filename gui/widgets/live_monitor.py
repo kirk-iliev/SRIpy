@@ -3,6 +3,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 import pyqtgraph as pg
 from typing import Tuple
 import numpy as np
+from matplotlib import cm
 
 class LiveMonitorWidget(QWidget):
     # Signals to communicate with Main Window
@@ -20,10 +21,10 @@ class LiveMonitorWidget(QWidget):
         self.image_item = pg.ImageItem()
         self.image_plot.addItem(self.image_item)
 
-        cmap = pg.colormap.get('jet')
+        cmap = cm.get_cmap('jet')
         if cmap is not None:
-            lut = cmap.getLookupTable(0.0, 1.0, 256)
-            self.image_item.setLookupTable(np.array(lut))
+            lut = cmap(np.linspace(0, 1, 256))[:, :3] * 255
+            self.image_item.setLookupTable(np.array(lut, dtype=np.uint8))
 
         # ROI: Vertical Binning Region
         self.roi_rows = pg.LinearRegionItem(orientation='horizontal', brush=(0, 50, 255, 50))  # type: ignore

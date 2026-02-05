@@ -44,7 +44,7 @@ Run this in the root folder:
 ```bash
 python -m venv .venv
 
-# Linux / macOS
+# Linux
 source .venv/bin/activate
 
 # Windows
@@ -62,9 +62,12 @@ python main.py
 ```
 
 ## Notes
-Recommend assigning your GigE camera a static IP address. This can be done in the Vimba Viewer app from AVT.  
-Note that Allied Vision has pulled support for VmbPy on MacOS in recent years, and trying to use an outdated version with this software is not recommended.  
-Please use Linux or Windows.
+* Recommend assigning your Manta camera a static IP address. This can be done in the Vimba Viewer app from AVT.  
+* Note that Allied Vision has pulled support for VmbPy on MacOS in recent years, and trying to use an outdated version with this software is not recommended.  
+* Please use Linux or Windows.
+
+## Planned Features
+* Support for additional GigE devices
 
 ## References
 

@@ -2,6 +2,7 @@ import json
 import os
 import copy
 import logging
+from pathlib import Path
 from typing import Dict, Any
 
 class ConfigManager:
@@ -34,7 +35,8 @@ class ConfigManager:
     }
 
     def __init__(self, filename="sri_config.json"):
-        self.filepath = os.path.join(os.getcwd(), filename)
+        project_root = Path(__file__).resolve().parent.parent
+        self.filepath = str(project_root / filename)
         self.logger = logging.getLogger(__name__)
         # Use a deep copy to avoid shared nested structures between instances
         self.config = copy.deepcopy(self.DEFAULT_CONFIG)

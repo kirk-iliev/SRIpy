@@ -74,20 +74,35 @@ class BurstWorker(QObject):
                     # Transpose can return non-contiguous views; make contiguous
                     img = np.ascontiguousarray(img.T)
 
-                # Slicing (fast view generation)
-                if self.roi_slice:
+                # Extract lineout with proper ROI handling
+                # NOTE: roi_slice and roi_x_map are always in ORIGINAL (non-transposed) coordinates
+                # We must swap them if transpose is enabled
+                if self.transpose and self.roi_slice:
+                    # After transpose: image is (orig_width, orig_height)
+                    # roi_x_map (original column range) now indexes height
+                    # roi_slice (original row range) now indexes width
+                    row_slice = slice(int(self.roi_x_map[0]), int(self.roi_x_map[1]))
+                    lineout = self.fitter.get_lineout(img, row_slice)
+                elif self.roi_slice:
+                    # Normal orientation
                     lineout = self.fitter.get_lineout(img, self.roi_slice)
                 else:
                     lineout = self.fitter.get_lineout(img)
                 
                 # Apply X-ROI (width crop)
-                if self.roi_x_map:
+                # After transpose swap, we need to use roi_slice for column cropping
+                if self.transpose and self.roi_slice:
+                    # Columns are original rows
+                    x_min, x_max = int(self.roi_slice.start), int(self.roi_slice.stop)
+                elif self.roi_x_map:
+                    # Normal orientation
                     x_min, x_max = self.roi_x_map
-                    x_min = max(0, int(x_min))
-                    x_max = min(len(lineout), int(x_max))
-                    y_fit_data = lineout[x_min:x_max] if x_max > x_min else lineout
                 else:
-                    y_fit_data = lineout
+                    x_min, x_max = 0, len(lineout)
+                
+                x_min = max(0, int(x_min))
+                x_max = min(len(lineout), int(x_max))
+                y_fit_data = lineout[x_min:x_max] if x_max > x_min else lineout
 
                 # Store raw data for Phase 2
                 raw_lineouts.append(np.nan_to_num(y_fit_data))

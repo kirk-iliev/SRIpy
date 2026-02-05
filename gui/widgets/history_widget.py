@@ -8,7 +8,8 @@ class HistoryWidget(QWidget):
         layout = QVBoxLayout(self)
         
         self.history_len = history_len
-        self.history_data = np.zeros(self.history_len)
+        self.history_data = np.full(self.history_len, np.nan)  # Start with NaN, not zeros
+        self.data_points_added = 0  # Track actual valid data points
         
         self.plot_widget = pg.PlotWidget(title="Beam Size History")
         self.plot_widget.setLabel('left', 'Sigma (um)')
@@ -20,6 +21,19 @@ class HistoryWidget(QWidget):
 
     def add_point(self, value):
         """Add a new sigma value and scroll the plot."""
+        # Validate input
+        if not np.isfinite(value):
+            return  # Ignore invalid data points
+        
         self.history_data = np.roll(self.history_data, -1)
         self.history_data[-1] = value
-        self.curve.setData(self.history_data)
+        self.data_points_added += 1
+        
+        # Only plot valid data points (non-NaN)
+        valid_mask = np.isfinite(self.history_data)
+        valid_data = self.history_data[valid_mask]
+        
+        if len(valid_data) > 0:
+            self.curve.setData(valid_data)
+        else:
+            self.curve.setData([])

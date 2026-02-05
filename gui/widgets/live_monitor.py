@@ -14,6 +14,7 @@ class LiveMonitorWidget(QWidget):
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout(self)
+        self._last_img_shape = None
 
         # Camera Frame Plot
         self.image_container = pg.GraphicsLayoutWidget()
@@ -26,10 +27,15 @@ class LiveMonitorWidget(QWidget):
             lut = cmap(np.linspace(0, 1, 256))[:, :3] * 255
             self.image_item.setLookupTable(np.array(lut, dtype=np.uint8))
 
-        # ROI: Vertical Binning Region
+        # ROI: Vertical Binning Region (Rows)
         self.roi_rows = pg.LinearRegionItem(orientation='horizontal', brush=(0, 50, 255, 50))  # type: ignore
         self.roi_rows.setRegion([400, 800])
+        # Bounds will be set dynamically in update_image
         self.image_plot.addItem(self.roi_rows)
+
+        # FIX: Connect Vertical ROI signals
+        self.roi_rows.sigRegionChanged.connect(self._handle_region_change)
+        self.roi_rows.sigRegionChangeFinished.connect(lambda: self.roi_drag_end.emit())
 
         # Lineout Plot
         self.lineout_plot = pg.PlotWidget(title="Interference Profile")
@@ -37,18 +43,14 @@ class LiveMonitorWidget(QWidget):
         self.curve_raw = self.lineout_plot.plot(pen=pg.mkPen('w', width=2), name="Raw")
         self.curve_fit = self.lineout_plot.plot(pen=pg.mkPen('r', width=3, style=Qt.PenStyle.DashLine), name="Fit")
 
-        # ROI: Fit Width Region
+        # ROI: Fit Width Region (Horizontal)
         self.roi_fit_width = pg.LinearRegionItem(orientation='vertical', brush=(0, 255, 0, 30))  # type: ignore
         self.roi_fit_width.setRegion([800, 1200])
+        # Bounds will be set dynamically in update_image
         self.lineout_plot.addItem(self.roi_fit_width)
 
-        # sigRegionChanged fires *during* the drag.
-        # We use this to trigger 'roi_drag_start' which sets user_is_interacting=True
+        # FIX: Connect Horizontal ROI signals
         self.roi_fit_width.sigRegionChanged.connect(self._handle_region_change)
-
-        # sigRegionChangeFinished fires on *release*.
-        # This triggers 'roi_drag_end' which sets user_is_interacting=False
-        # Use a lambda to drop the region args and emit our simple signal
         self.roi_fit_width.sigRegionChangeFinished.connect(lambda: self.roi_drag_end.emit())
 
         layout.addWidget(self.image_container, stretch=3)
@@ -60,8 +62,21 @@ class LiveMonitorWidget(QWidget):
         self.roi_changed.emit()
 
     def update_image(self, img_data):
-        #self.image_item.setImage(img_data, autoLevels=False, levels=(0, 4095))
-        self.image_item.setImage(img_data, autoLevels=True)
+        if img_data is None:
+            return
+
+        # Ensure view auto-ranges when dimensions change (e.g., transpose)
+        if self._last_img_shape != img_data.shape:
+            self._last_img_shape = img_data.shape
+            self.image_plot.enableAutoRange()
+            self.image_plot.setAspectLocked(False)
+
+        self.image_item.setImage(img_data, autoLevels=True, autoRange=True)
+
+        # Update bounds dynamically based on incoming image size
+        h, w = img_data.shape
+        self.roi_rows.setBounds([0, h])
+        self.roi_fit_width.setBounds([0, w])
 
     def update_lineout(self, x_data, y_data):
         self.curve_raw.setData(x_data, y_data)

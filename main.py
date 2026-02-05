@@ -1,25 +1,38 @@
 import sys
+import logging
 import traceback
+import pyqtgraph as pg
 from PyQt6.QtWidgets import QApplication, QMessageBox
-from gui.main_window import InterferometerGUI
+from gui.main_window import InterferometerView
+from gui.controllers.interferometer_controller import InterferometerController
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
 
 def main():
     """
     Application Entry Point.
     """
+    setup_logging()
+    pg.setConfigOptions(imageAxisOrder="row-major")
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     
     sys.excepthook = handle_exception
 
     try:
-        window = InterferometerGUI()
+        view = InterferometerView()
+        controller = InterferometerController(view)
     except Exception:
         handle_exception(*sys.exc_info())
         sys.exit(1)
 
     try:
-        window.show()
+        view.show()
+        _ = controller
         sys.exit(app.exec())
     except Exception:
         handle_exception(*sys.exc_info())

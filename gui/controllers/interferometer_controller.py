@@ -1,0 +1,354 @@
+import numpy as np
+from PyQt6.QtCore import QObject
+from PyQt6.QtWidgets import QMessageBox, QFileDialog
+
+from core.acquisition_manager import AcquisitionManager
+from core.data_model import DataManager, ExperimentMetadata, ExperimentResult
+
+class InterferometerController(QObject):
+    def __init__(self, view):
+        super().__init__()
+        self.view = view
+        self.model = AcquisitionManager()
+        self._suppress_roi_sync = False
+        self._user_is_dragging = False  # Track user interaction state
+        
+        self._connect_signals()
+        
+        # Initial Hardware Setup
+        try:
+            self.model.initialize()
+        except RuntimeError as e:
+            QMessageBox.critical(self.view, "Connection Error", str(e))
+
+        # Apply config to UI, then push to model
+        self._apply_config_to_view()
+        self._sync_all_params()
+
+    def _connect_signals(self):
+        # --- UI -> Controller -> Model ---
+        # Buttons
+        self.view.controls.toggle_live_clicked.connect(self._handle_live_toggle)
+        self.view.controls.acquire_bg_clicked.connect(self._handle_bg_acquire)
+        self.view.controls.burst_clicked.connect(self._handle_burst)
+        
+        # Value Changes
+        self.view.controls.exposure_changed.connect(self.model.set_exposure)
+        self.view.controls.gain_changed.connect(self.model.set_gain)
+        self.view.controls.chk_transpose.toggled.connect(self._handle_transpose_toggled)
+        self.view.controls.chk_bg.toggled.connect(self.model.toggle_background)
+        self.view.controls.chk_autocenter.toggled.connect(self.model.set_autocenter)
+        
+        # Physics Params
+        self.view.controls.physics_changed.connect(self._sync_physics)
+        
+        # ROI Interactions (Live Widget)
+        self.view.live_widget.roi_changed.connect(self._sync_roi)
+        self.view.live_widget.roi_drag_start.connect(self._on_roi_drag_start)
+        self.view.live_widget.roi_drag_end.connect(self._on_roi_drag_end)
+        
+        self.view.controls.reset_roi_clicked.connect(self._reset_roi)
+
+        # Saving
+        self.view.controls.save_data_clicked.connect(self._save_dataset)
+        self.view.controls.save_mat_clicked.connect(self._save_matlab)
+        
+        # App Lifecycle
+        self.view.close_requested.connect(self.cleanup)
+
+        # --- Model -> Controller -> View ---
+        # Data Streams
+        self.model.live_data_ready.connect(self._update_display)
+        self.model.fit_result_ready.connect(self._update_stats)
+        self.model.error_occurred.connect(self._show_error)
+        self.model.roi_updated.connect(self._apply_model_roi)
+        self.model.saturation_updated.connect(self._update_saturation)
+        
+        # Burst Status
+        self.model.burst_progress.connect(self.view.controls.progress_bar.setValue)
+        self.model.burst_finished.connect(self._handle_burst_finished)
+        self.model.burst_error.connect(self._handle_burst_error)
+
+    # --- Sync Helpers ---
+    def _sync_all_params(self):
+        self.model.set_exposure(self.view.controls.spin_exp.value())
+        self.model.set_gain(self.view.controls.spin_gain.value())
+        self.model.set_transpose(self.view.controls.chk_transpose.isChecked())
+        self.model.set_autocenter(self.view.controls.chk_autocenter.isChecked())
+        self.model.toggle_background(self.view.controls.chk_bg.isChecked())
+        self._sync_physics()
+        self._sync_roi()
+
+    def _on_roi_drag_start(self):
+        self._user_is_dragging = True
+
+    def _on_roi_drag_end(self):
+        self._user_is_dragging = False
+        self._sync_roi()
+
+    def _sync_roi(self):
+        if self._suppress_roi_sync:
+            return
+        rows = self.view.live_widget.get_roi_rows()
+        width = self.view.live_widget.get_roi_width()
+        if self.view.controls.chk_transpose.isChecked():
+            # Display rows map to original columns; display width maps to original rows
+            self.model.set_roi(width[0], width[1], rows[0], rows[1])
+        else:
+            self.model.set_roi(rows[0], rows[1], width[0], width[1])
+
+    def _reset_roi(self):
+        """Reset ROI to default values and DISABLE autocenter."""
+        c = self.model.cfg
+        self._suppress_roi_sync = True
+        try:
+            self.view.live_widget.set_roi_rows(c['roi']['rows_min'], c['roi']['rows_max'])
+            self.view.live_widget.set_roi_width(c['roi']['fit_width_min'], c['roi']['fit_width_max'])
+            # Disable auto-center in UI so it doesn't snap back immediately
+            self.view.controls.chk_autocenter.setChecked(False)
+        finally:
+            self._suppress_roi_sync = False
+        
+        self.model.set_autocenter(False)
+        self._sync_roi()
+
+    def _apply_config_to_view(self):
+        c = self.model.cfg
+        self.view.controls.spin_exp.blockSignals(True)
+        self.view.controls.spin_gain.blockSignals(True)
+        self.view.controls.chk_transpose.blockSignals(True)
+        self.view.controls.chk_autocenter.blockSignals(True)
+        self.view.controls.chk_bg.blockSignals(True)
+
+        self.view.controls.spin_exp.setValue(c['camera']['exposure_ms'])
+        self.view.controls.spin_gain.setValue(c['camera']['gain_db'])
+        self.view.controls.chk_transpose.setChecked(c['camera']['transpose'])
+
+        self.view.controls.spin_lambda.setValue(c['physics']['wavelength_nm'])
+        self.view.controls.spin_slit.setValue(c['physics']['slit_separation_mm'])
+        self.view.controls.spin_dist.setValue(c['physics']['distance_m'])
+
+        self.view.controls.chk_autocenter.setChecked(c['roi']['auto_center'])
+
+        self.view.controls.chk_bg.setChecked(False)
+        self.view.controls.chk_bg.setEnabled(False)
+
+        self.view.controls.spin_exp.blockSignals(False)
+        self.view.controls.spin_gain.blockSignals(False)
+        self.view.controls.chk_transpose.blockSignals(False)
+        self.view.controls.chk_autocenter.blockSignals(False)
+        self.view.controls.chk_bg.blockSignals(False)
+
+        self._suppress_roi_sync = True
+        try:
+            self.view.live_widget.set_roi_rows(c['roi']['rows_min'], c['roi']['rows_max'])
+            self.view.live_widget.set_roi_width(c['roi']['fit_width_min'], c['roi']['fit_width_max'])
+        finally:
+            self._suppress_roi_sync = False
+
+
+    def _sync_physics(self):
+        l = self.view.controls.spin_lambda.value() * 1e-9
+        s = self.view.controls.spin_slit.value() * 1e-3
+        d = self.view.controls.spin_dist.value()
+        self.model.set_physics_params(l, s, d)
+
+    # --- Logic Handlers ---
+    def _handle_live_toggle(self, checked):
+        if checked:
+            self.model.start_live()
+            self.view.controls.btn_live.setText("Stop Live")
+            self.view.controls.btn_live.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+        else:
+            self.model.stop_live()
+            self.view.controls.btn_live.setText("Start Live")
+            self.view.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
+
+    def _handle_bg_acquire(self):
+        self.model.capture_background()
+        if self.model.background_frame is not None:
+            self.view.controls.chk_bg.setEnabled(True)
+            self.view.controls.chk_bg.setChecked(True)
+
+    def _handle_burst(self):
+        self.view.controls.progress_bar.setVisible(True)
+        self.view.controls.btn_burst.setEnabled(False)
+        self.view.controls.btn_live.setEnabled(False)
+        self.model.start_burst(50) 
+
+    def _handle_burst_finished(self, res):
+        self.view.controls.progress_bar.setVisible(False)
+        self.view.controls.btn_burst.setEnabled(True)
+        self.view.controls.btn_live.setEnabled(True)
+        if self.model.is_live_running():
+            self.view.controls.btn_live.setChecked(True)
+            self.view.controls.btn_live.setText("Stop Live")
+            self.view.controls.btn_live.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+        else:
+            self.view.controls.btn_live.setChecked(False)
+            self.view.controls.btn_live.setText("Start Live")
+            self.view.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
+        
+        self.view.history_widget.add_point(res.mean_sigma)
+        QMessageBox.information(self.view, "Burst Done", f"Mean Sigma: {res.mean_sigma:.2f} um")
+
+    def _handle_burst_error(self, msg):
+        self.view.controls.progress_bar.setVisible(False)
+        self.view.controls.btn_burst.setEnabled(True)
+        self.view.controls.btn_live.setEnabled(True)
+        if self.model.is_live_running():
+            self.view.controls.btn_live.setChecked(True)
+            self.view.controls.btn_live.setText("Stop Live")
+            self.view.controls.btn_live.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+        else:
+            self.view.controls.btn_live.setChecked(False)
+            self.view.controls.btn_live.setText("Start Live")
+            self.view.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
+        QMessageBox.warning(self.view, "Burst Error", msg)
+
+    def _update_display(self, img, lineout):
+        self.view.live_widget.update_image(img)
+        self.view.live_widget.update_lineout(np.arange(len(lineout)), lineout)
+        self._update_saturation(self.model.last_saturated)
+        
+    def _update_stats(self, res, x_data):
+        if res.success:
+            self.view.live_widget.update_fit(x_data, res.fitted_curve)
+            self.view.controls.update_stats(res.visibility, res.sigma_microns, self.model.last_saturated)
+            if self.view.tabs.currentIndex() == 1:
+                self.view.history_widget.add_point(res.sigma_microns)
+        else:
+            self.view.live_widget.update_fit([], [])
+            self.view.controls.update_stats(0.0, 0.0, self.model.last_saturated)
+            if self.view.tabs.currentIndex() == 1:
+                self.view.history_widget.add_point(float('nan'))
+
+    def _update_saturation(self, is_saturated: bool):
+        if is_saturated:
+            self.view.controls.lbl_sat.setText("SATURATED!")
+            self.view.controls.lbl_sat.setStyleSheet(
+                "color: red; font-weight: bold; background-color: yellow;"
+            )
+        else:
+            self.view.controls.lbl_sat.setText("OK")
+            self.view.controls.lbl_sat.setStyleSheet("color: green; font-weight: bold;")
+
+    def _show_error(self, msg):
+        print(f"Error: {msg}") 
+
+    def _handle_transpose_toggled(self, checked: bool):
+        self.model.set_transpose(checked)
+        # Refresh ROI display to match orientation
+        self._apply_model_roi(
+            self.model.roi_slice.start,
+            self.model.roi_slice.stop,
+            self.model.roi_x_limits[0],
+            self.model.roi_x_limits[1],
+        )
+
+    def _apply_model_roi(self, y_min, y_max, x_min, x_max):
+        if self._user_is_dragging:
+            return
+
+        self._suppress_roi_sync = True
+        try:
+            if self.view.controls.chk_transpose.isChecked():
+                # Display rows map to original columns; display width maps to original rows
+                self.view.live_widget.set_roi_rows(x_min, x_max)
+                self.view.live_widget.set_roi_width(y_min, y_max)
+            else:
+                self.view.live_widget.set_roi_rows(y_min, y_max)
+                self.view.live_widget.set_roi_width(x_min, x_max)
+        finally:
+            self._suppress_roi_sync = False
+
+    def _save_dataset(self):
+        meta = ExperimentMetadata(
+            exposure_s=self.view.controls.spin_exp.value() / 1000.0,
+            gain_db=self.view.controls.spin_gain.value(),
+            wavelength_nm=self.view.controls.spin_lambda.value(),
+            slit_separation_mm=self.view.controls.spin_slit.value(),
+            distance_m=self.view.controls.spin_dist.value(),
+        )
+        
+        if self.model.last_raw_image is None or self.model.last_fit_result is None:
+            QMessageBox.warning(self.view, "Save Error", "No data available to save.")
+            return
+
+        res = ExperimentResult(
+            visibility=self.model.last_fit_result.visibility,
+            sigma_microns=self.model.last_fit_result.sigma_microns,
+            lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else self.model.last_lineout,
+            fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else self.model.last_fit_result.fitted_curve,
+            is_saturated=self.model.last_saturated
+        )
+
+        dir_path = QFileDialog.getExistingDirectory(self.view, "Select Save Directory")
+        if dir_path:
+            path = DataManager.save_dataset(dir_path, "SRI_Data", self.model.last_raw_image, meta, res)
+            QMessageBox.information(self.view, "Saved", f"Saved to:\n{path}")
+
+    def _save_matlab(self):
+        meta = ExperimentMetadata(
+            exposure_s=self.view.controls.spin_exp.value() / 1000.0,
+            gain_db=self.view.controls.spin_gain.value(),
+            wavelength_nm=self.view.controls.spin_lambda.value(),
+            slit_separation_mm=self.view.controls.spin_slit.value(),
+            distance_m=self.view.controls.spin_dist.value(),
+        )
+
+        if self.model.last_raw_image is None or self.model.last_fit_result is None:
+            QMessageBox.warning(self.view, "Save Error", "No data available to save.")
+            return
+
+        res = ExperimentResult(
+            visibility=self.model.last_fit_result.visibility,
+            sigma_microns=self.model.last_fit_result.sigma_microns,
+            lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else self.model.last_lineout,
+            fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else self.model.last_fit_result.fitted_curve,
+            is_saturated=self.model.last_saturated
+        )
+
+        dir_path = QFileDialog.getExistingDirectory(self.view, "Select Save Directory")
+        if dir_path:
+            path = DataManager.save_matlab(dir_path, "SRI_Matlab", self.model.last_raw_image, meta, res)
+            QMessageBox.information(self.view, "Saved", f"Saved .mat file:\n{path}")
+
+    def _save_current_config(self):
+        """Scrape UI settings and save to disk via ConfigManager."""
+        rows = self.view.live_widget.get_roi_rows()
+        width = self.view.live_widget.get_roi_width()
+        if self.view.controls.chk_transpose.isChecked():
+            rows_min, rows_max = width[0], width[1]
+            fit_width_min, fit_width_max = rows[0], rows[1]
+        else:
+            rows_min, rows_max = rows[0], rows[1]
+            fit_width_min, fit_width_max = width[0], width[1]
+
+        ui_config = {
+            "camera": {
+                "exposure_ms": self.view.controls.spin_exp.value(),
+                "gain_db": self.view.controls.spin_gain.value(),
+                "transpose": self.view.controls.chk_transpose.isChecked(),
+                "saturation_threshold": self.model.saturation_threshold
+            },
+            "physics": {
+                "wavelength_nm": self.view.controls.spin_lambda.value(),
+                "slit_separation_mm": self.view.controls.spin_slit.value(),
+                "distance_m": self.view.controls.spin_dist.value()
+            },
+            "roi": {
+                "rows_min": rows_min,
+                "rows_max": rows_max,
+                "fit_width_min": fit_width_min,
+                "fit_width_max": fit_width_max,
+                "auto_center": self.view.controls.chk_autocenter.isChecked()
+            }
+        }
+        self.model.config_manager.save(ui_config)
+
+    def cleanup(self, event):
+        # FIX: Save settings before shutting down
+        self._save_current_config()
+        self.model.shutdown()
+        event.accept()

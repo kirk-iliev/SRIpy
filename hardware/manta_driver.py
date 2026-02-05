@@ -51,8 +51,6 @@ class MantaDriver:
                 self._cam = cams[0]
 
             self._cam.__enter__()  # type: ignore
-            # Setup logging
-            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
             self.logger = logging.getLogger(__name__)
             self.logger.info(f"Connected to: {self._cam.get_name()} (ID: {self._cam.get_id()})")  # type: ignore
 

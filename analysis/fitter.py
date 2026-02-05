@@ -171,7 +171,13 @@ class InterferenceFitter:
                 p0=p0_final, bounds=(bounds_min, bounds_max), maxfev=5000
             )
             
-            vis = popt[4]
+            # Validate output parameters
+            if not all(np.isfinite(popt)):
+                return FitResult(success=False, message="Fit converged but produced non-finite parameters")
+            
+            vis = float(popt[4])
+            # Clamp visibility to physical range
+            vis = np.clip(vis, 0.0, 1.0)
             sigma = self.calculate_sigma(vis)
 
             params = {
@@ -179,7 +185,7 @@ class InterferenceFitter:
                 'amplitude': float(popt[1]),
                 'sinc_width': float(popt[2]),
                 'sinc_center': float(popt[3]),
-                'visibility': float(popt[4]),
+                'visibility': vis,  # Use clamped value
                 'sine_k': float(popt[5]),
                 'sine_phase': float(popt[6]),
             }
@@ -199,29 +205,61 @@ class InterferenceFitter:
             except Exception:
                 param_errors = None
 
+            try:
+                fitted_curve = self._full_interference_model(x, *popt)
+                if not all(np.isfinite(fitted_curve)):
+                    self.logger.warning("Fitted curve contains non-finite values")
+                    fitted_curve = np.clip(fitted_curve, -1e10, 1e10)
+            except Exception as e:
+                self.logger.warning(f"Error computing fitted curve: {e}")
+                fitted_curve = np.full_like(y, np.nan)
+
             return FitResult(
                 success=True,
                 visibility=vis,
                 sigma_microns=sigma * 1e6,
-                fitted_curve=self._full_interference_model(x, *popt),
+                fitted_curve=fitted_curve,
                 params=params,
                 param_errors=param_errors,
                 pcov=pcov
             )
             
+        except RuntimeError as e:
+            return FitResult(success=False, message=f"Fit Failed (convergence): {str(e)[:100]}")
+        except ValueError as e:
+            return FitResult(success=False, message=f"Fit Failed (invalid data): {str(e)[:100]}")
         except Exception as e:
-            return FitResult(success=False, message=f"Fit Failed: {str(e)}")
+            self.logger.error(f"Unexpected fit error: {e}", exc_info=True)
+            return FitResult(success=False, message=f"Fit Failed (unexpected): {str(type(e).__name__)[:50]}")
                 
 
     def calculate_sigma(self, visibility: float) -> float:
+        """Calculate beam sigma from visibility with robust error handling."""
+        # Validate input
         if not np.isfinite(visibility):
-            self.logger.warning(f"calculate_sigma: received non-finite visibility: {visibility}")
             return 0.0
-        if visibility <= 0.001 or visibility >= 0.999:
+        
+        # Clamp visibility to valid range (avoid math domain errors)
+        visibility = np.clip(visibility, 0.001, 0.999)
+        
+        # Return 0 only if visibility extremely low (no useful signal)
+        if visibility <= 0.001:
             return 0.0
+        
         coeff = (self.wavelength * self.distance) / (np.pi * self.slit_sep)
+        
         try:
-            return coeff * np.sqrt(0.5 * np.log(1.0 / visibility))
-        except ValueError as e:
-            self.logger.warning(f"calculate_sigma: math domain error with visibility={visibility}: {e}")
+            # Safely compute sigma
+            arg = 0.5 * np.log(1.0 / visibility)
+            if arg <= 0:
+                return 0.0
+            sigma = coeff * np.sqrt(arg)
+            
+            # Validate result
+            if not np.isfinite(sigma) or sigma < 0:
+                return 0.0
+            return sigma
+            
+        except (ValueError, ZeroDivisionError, RuntimeError) as e:
+            self.logger.debug(f"calculate_sigma: math error with visibility={visibility}: {e}")
             return 0.0

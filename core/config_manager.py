@@ -18,7 +18,12 @@ class ConfigManager:
             "saturation_threshold": 4090
         },
         "analysis": {
-            "min_signal_threshold": 50
+            "min_signal_threshold": 50,
+            "autocenter_min_signal": 200,
+            "analysis_timeout_s": 3.0
+        },
+        "burst": {
+            "default_frames": 50
         },
         "physics": {
             "wavelength_nm": 550.0,

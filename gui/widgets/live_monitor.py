@@ -3,7 +3,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 import pyqtgraph as pg
 from typing import Tuple
 import numpy as np
-from matplotlib import cm
+import matplotlib
 
 class LiveMonitorWidget(QWidget):
     # Signals to communicate with Main Window
@@ -22,7 +22,14 @@ class LiveMonitorWidget(QWidget):
         self.image_item = pg.ImageItem()
         self.image_plot.addItem(self.image_item)
 
-        cmap = cm.get_cmap('jet')
+        # Use matplotlib.colormaps (non-deprecated API for matplotlib 3.7+)
+        try:
+            cmap = matplotlib.colormaps['jet']
+        except (AttributeError, KeyError):
+            # Fallback for older matplotlib
+            from matplotlib import cm
+            cmap = cm.get_cmap('jet')
+        
         if cmap is not None:
             lut = cmap(np.linspace(0, 1, 256))[:, :3] * 255
             self.image_item.setLookupTable(np.array(lut, dtype=np.uint8))

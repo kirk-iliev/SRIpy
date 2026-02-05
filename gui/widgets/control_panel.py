@@ -106,11 +106,11 @@ class ControlPanelWidget(QWidget):
         self.btn_live.toggled.connect(self.toggle_live_clicked.emit)
         layout.addWidget(self.btn_live)
 
-        self.btn_burst = QPushButton("Burst Acquire (50)")
+        self.btn_burst = QPushButton("Burst Acquire")
         self.btn_burst.setStyleSheet("background-color: #d95f02; color: white; font-weight: bold; height: 40px;")
         self.btn_burst.clicked.connect(lambda: self.burst_clicked.emit())
         layout.addWidget(self.btn_burst)
-        
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
@@ -122,8 +122,12 @@ class ControlPanelWidget(QWidget):
         self.btn_save_mat = QPushButton("Save for MATLAB (.mat)")
         self.btn_save_mat.clicked.connect(lambda: self.save_mat_clicked.emit())
         layout.addWidget(self.btn_save_mat)
-        
+
         layout.addStretch()
+
+    def set_burst_frame_count(self, count: int):
+        """Update burst button label to show configured frame count."""
+        self.btn_burst.setText(f"Burst Acquire ({count})")
 
     def update_stats(self, vis, sigma, sat_status):
         self.lbl_vis.setText(f"{vis:.3f}")

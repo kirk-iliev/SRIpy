@@ -24,6 +24,9 @@ class InterferometerController(QObject):
         # Apply config to UI, then push to model
         self._apply_config_to_view()
         self._sync_all_params()
+        
+        # Update burst button label with configured frame count
+        self.view.controls.set_burst_frame_count(self.model._default_burst_frames)
 
     def _connect_signals(self):
         # --- UI -> Controller -> Model ---
@@ -174,7 +177,7 @@ class InterferometerController(QObject):
         self.view.controls.progress_bar.setVisible(True)
         self.view.controls.btn_burst.setEnabled(False)
         self.view.controls.btn_live.setEnabled(False)
-        self.model.start_burst(50) 
+        self.model.start_burst(self.model._default_burst_frames) 
 
     def _handle_burst_finished(self, res):
         self.view.controls.progress_bar.setVisible(False)
@@ -234,7 +237,14 @@ class InterferometerController(QObject):
             self.view.controls.lbl_sat.setStyleSheet("color: green; font-weight: bold;")
 
     def _show_error(self, msg):
-        print(f"Error: {msg}") 
+        """Display error to user via console and status bar."""
+        import logging
+        logging.getLogger(__name__).error(f"Error: {msg}")
+        # Also update UI status to alert user
+        self.view.controls.lbl_sat.setText("ERROR")
+        self.view.controls.lbl_sat.setStyleSheet(
+            "color: white; font-weight: bold; background-color: red;"
+        ) 
 
     def _handle_transpose_toggled(self, checked: bool):
         self.model.set_transpose(checked)
@@ -348,7 +358,12 @@ class InterferometerController(QObject):
         self.model.config_manager.save(ui_config)
 
     def cleanup(self, event):
-        # FIX: Save settings before shutting down
-        self._save_current_config()
-        self.model.shutdown()
+        # FIX: Save settings before shutting down, but ensure shutdown happens
+        try:
+            self._save_current_config()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to save config on exit: {e}")
+        finally:
+            self.model.shutdown()
         event.accept()

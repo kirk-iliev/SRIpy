@@ -306,11 +306,9 @@ class TestManagerTypeAnnotations:
         with open(manager_path, 'r') as f:
             source = f.read()
 
+        # Updated for MVC refactor: CameraIoThread replaced separate cam_thread/cam_worker
         required_annotations = [
-            'cam_thread: Optional[QThread]',
-            'cam_worker: Optional[CameraWorker]',
-            'burst_thread: Optional[QThread]',
-            'burst_worker: Optional[BurstWorker]',
+            'camera_thread: Optional[CameraIoThread]',
             'an_thread: Optional[QThread]',
             'an_worker: Optional[AnalysisWorker]',
         ]
@@ -330,10 +328,8 @@ class TestManagerTypeAnnotations:
         assert 'Optional' in source, "Optional not imported"
 
         # Check that thread/worker attributes are declared as Optional
-        assert 'cam_thread: Optional' in source
-        assert 'cam_worker: Optional' in source
-        assert 'burst_thread: Optional' in source
-        assert 'burst_worker: Optional' in source
+        # Updated for MVC refactor: CameraIoThread unifies camera IO
+        assert 'camera_thread: Optional' in source
         assert 'an_thread: Optional' in source
         assert 'an_worker: Optional' in source
 
@@ -341,37 +337,32 @@ class TestManagerTypeAnnotations:
 class TestNullSafety:
     """Test that null checks are properly implemented in acquisition manager."""
 
-    def test_cam_worker_null_checks_in_source(self):
-        """Verify cam_worker has null checks before use."""
+    def test_camera_thread_null_checks_in_source(self):
+        """Verify camera_thread has null checks before use."""
         base_dir = os.path.dirname(os.path.dirname(__file__))
         manager_path = os.path.join(base_dir, 'core', 'acquisition_manager.py')
         with open(manager_path, 'r') as f:
             source = f.read()
 
-        # Count accesses to cam_worker methods
-        accesses = source.count('self.cam_worker.')
+        # Count accesses to camera_thread methods
+        accesses = source.count('self.camera_thread.')
 
-        # Count null checks
-        checks = source.count('self.cam_worker is not None')
+        # Count null checks (camera_thread is None or camera_thread is not None)
+        checks = source.count('self.camera_thread is not None') + source.count('self.camera_thread is None')
 
         # Should have at least one null check
-        assert checks > 0, "No null checks found for cam_worker"
+        assert checks > 0, f"No null checks found for camera_thread (found {accesses} accesses)"
 
-    def test_cam_thread_null_checks_in_source(self):
-        """Verify cam_thread has null checks before use."""
+    def test_camera_thread_defensive_in_methods(self):
+        """Verify camera_thread is checked before method calls."""
         base_dir = os.path.dirname(os.path.dirname(__file__))
         manager_path = os.path.join(base_dir, 'core', 'acquisition_manager.py')
         with open(manager_path, 'r') as f:
             source = f.read()
 
-        # Count accesses to cam_thread methods
-        accesses = source.count('self.cam_thread.')
-
-        # Count null checks
-        checks = source.count('self.cam_thread is not None')
-
-        # Should have at least one null check
-        assert checks > 0, "No null checks found for cam_thread"
+        # Verify camera_thread checks exist in key methods
+        # The refactored code uses 'if self.camera_thread is None: return' pattern
+        assert 'if self.camera_thread is None' in source, "No defensive None checks for camera_thread"
 
     def test_an_thread_null_checks_in_source(self):
         """Verify an_thread has null checks before use."""
@@ -380,8 +371,8 @@ class TestNullSafety:
         with open(manager_path, 'r') as f:
             source = f.read()
 
-        # Count null checks
-        checks = source.count('self.an_thread is not None')
+        # Count null checks - the code uses 'if self.an_thread:' which is truthy check
+        checks = source.count('if self.an_thread')
 
         # Should have null checks
         assert checks > 0, "No null checks found for an_thread"

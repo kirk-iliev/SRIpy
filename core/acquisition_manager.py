@@ -1,14 +1,36 @@
 # core/acquisition_manager.py
+"""
+Acquisition Manager - Central model coordinating camera, ROI, and analysis.
+
+Coordinate System Notes:
+------------------------
+The ROI is stored in ORIGINAL (camera-native) coordinates, even when transpose
+is enabled. This ensures configuration is saved/loaded consistently regardless
+of the current transpose state.
+
+- `roi_slice`: Rows in the **original** image (vertical strip before transpose)
+- `roi_x_limits`: Columns in the **original** image (horizontal range before transpose)
+
+When `transpose_enabled=True`, the display image is `img.T`, so:
+- Original rows become display columns
+- Original columns become display rows
+
+The `_process_live_frame()` method maps between these coordinate systems:
+1. Load original coords from `roi_slice` / `roi_x_limits`
+2. Swap to display-space for visual operations
+3. Map back to original coords when storing updates
+"""
 import logging
 import time
 import numpy as np
 from typing import Optional, Tuple
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
+import numpy.typing as npt
 
 from hardware.manta_driver import MantaDriver
 from hardware.camera_io_thread import CameraIoThread
 from core.config_manager import ConfigManager
-from analysis.fitter import InterferenceFitter
+from analysis.fitter import InterferenceFitter, FitResult
 from analysis.analysis_worker import AnalysisWorker
 
 class AcquisitionManager(QObject):
@@ -42,12 +64,12 @@ class AcquisitionManager(QObject):
         self.background_frame = None
         self.saturation_threshold = 4090
 
-        # Cached outputs
-        self.last_raw_image = None
-        self.last_lineout = None
-        self.last_fit_result = None
-        self.last_fit_x = None
-        self.last_saturated = False
+        # Cached outputs (typed for IDE support)
+        self.last_raw_image: Optional[npt.NDArray] = None
+        self.last_lineout: Optional[npt.NDArray] = None
+        self.last_fit_result: Optional[FitResult] = None
+        self.last_fit_x: Optional[npt.NDArray] = None
+        self.last_saturated: bool = False
 
         # Analysis throttling
         self._analysis_busy = False
@@ -60,15 +82,23 @@ class AcquisitionManager(QObject):
         self.fitter = InterferenceFitter()
         self.fitter_burst = InterferenceFitter()
         
-        # Threads
+        # Threads (deferred to initialize() to avoid orphan threads on connection failure)
         self.camera_thread: Optional[CameraIoThread] = None
         self.an_thread: Optional[QThread] = None
         self.an_worker: Optional[AnalysisWorker] = None
         
-        self._setup_analysis_thread()
+        # Config-driven thresholds (defaults until apply_config runs)
+        self._autocenter_min_signal: float = 200.0
+        self._analysis_timeout_s: float = 3.0
+        self._default_burst_frames: int = 50
+        
         self.apply_config()
 
     def initialize(self):
+        # Set up analysis thread only once camera connects successfully
+        if self.an_thread is None:
+            self._setup_analysis_thread()
+
         try:
             self.driver.connect()
         except Exception as e:
@@ -99,7 +129,14 @@ class AcquisitionManager(QObject):
         self.autocenter_enabled = bool(c['roi']['auto_center'])
         self.transpose_enabled = bool(c['camera']['transpose'])
         self.saturation_threshold = int(c['camera'].get('saturation_threshold', 4090))
-        min_sig = c.get('analysis', {}).get('min_signal_threshold', 50.0)
+        
+        # Analysis thresholds from config
+        analysis_cfg = c.get('analysis', {})
+        min_sig = analysis_cfg.get('min_signal_threshold', 50.0)
+        self._autocenter_min_signal = float(analysis_cfg.get('autocenter_min_signal', 200.0))
+        self._analysis_timeout_s = float(analysis_cfg.get('analysis_timeout_s', 3.0))
+        self._default_burst_frames = int(c.get('burst', {}).get('default_frames', 50))
+        
         self.fitter.min_signal = min_sig
         self.fitter_burst.min_signal = min_sig
         self.set_physics_params(
@@ -259,7 +296,7 @@ class AcquisitionManager(QObject):
                 if np.all(np.isfinite(lineout)):
                     peak_idx = np.argmax(lineout)
                     # Only auto-center if we have a real signal (noise floor check)
-                    if lineout[peak_idx] > 200:
+                    if lineout[peak_idx] > self._autocenter_min_signal:
                         current_w = disp_col_stop - disp_col_start
                         new_min = max(0, peak_idx - current_w // 2)
                         new_max = min(w, new_min + current_w)
@@ -292,9 +329,9 @@ class AcquisitionManager(QObject):
             
             # 5. Analysis
             now = time.time()
-            if self._analysis_busy and (now - self._last_fit_request_time) <= 3.0:
+            if self._analysis_busy and (now - self._last_fit_request_time) <= self._analysis_timeout_s:
                 return
-            if self._analysis_busy and (now - self._last_fit_request_time) > 3.0:
+            if self._analysis_busy and (now - self._last_fit_request_time) > self._analysis_timeout_s:
                 self._analysis_busy = False
             if disp_col_stop > disp_col_start:
                 fit_y = lineout[disp_col_start:disp_col_stop]

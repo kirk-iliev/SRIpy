@@ -13,6 +13,7 @@ class ControlPanelWidget(QWidget):
     save_data_clicked = pyqtSignal()
     save_mat_clicked = pyqtSignal()
     reset_roi_clicked = pyqtSignal()
+    load_file_clicked = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -122,6 +123,11 @@ class ControlPanelWidget(QWidget):
         self.btn_save_mat = QPushButton("Save for MATLAB (.mat)")
         self.btn_save_mat.clicked.connect(lambda: self.save_mat_clicked.emit())
         layout.addWidget(self.btn_save_mat)
+
+        self.btn_load_file = QPushButton("Load Data File")
+        self.btn_load_file.setStyleSheet("background-color: #1b9e77; color: white; font-weight: bold;")
+        self.btn_load_file.clicked.connect(lambda: self.load_file_clicked.emit())
+        layout.addWidget(self.btn_load_file)
 
         layout.addStretch()
 

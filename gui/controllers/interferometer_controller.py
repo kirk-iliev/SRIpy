@@ -71,8 +71,38 @@ class InterferometerController(QObject):
         self.model.burst_progress.connect(self.view.controls.progress_bar.setValue)
         self.model.burst_finished.connect(self._handle_burst_finished)
         self.model.burst_error.connect(self._handle_burst_error)
+        
+        # Load file
+        self.view.controls.load_file_clicked.connect(self._handle_load_file)
+        self.model.physics_loaded.connect(self._on_physics_loaded)
 
     # --- Sync Helpers ---
+
+    def _on_physics_loaded(self, wave_nm, slit_mm, dist_m):
+        """Updates UI spinners without triggering feedback loops."""
+        controls = self.view.controls
+        
+        # 1. Block signals so updating the UI doesn't accidentally trigger 
+        #    a "value changed" event that sends data back to the model.
+        controls.spin_lambda.blockSignals(True)
+        controls.spin_slit.blockSignals(True)
+        controls.spin_dist.blockSignals(True)
+        
+        # 2. Update the values
+        controls.spin_lambda.setValue(float(wave_nm))
+        controls.spin_slit.setValue(float(slit_mm))
+        controls.spin_dist.setValue(float(dist_m))
+        
+        # 3. Unblock signals
+        controls.spin_lambda.blockSignals(False)
+        controls.spin_slit.blockSignals(False)
+        controls.spin_dist.blockSignals(False)
+        
+        # Optional: Flash the values or log to status bar to show user it happened
+        self.view.controls.lbl_sat.setText("PARAMS LOADED")
+        self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
+
+
     def _sync_all_params(self):
         self.model.set_exposure(self.view.controls.spin_exp.value())
         self.model.set_gain(self.view.controls.spin_gain.value())
@@ -215,16 +245,38 @@ class InterferometerController(QObject):
         self._update_saturation(self.model.last_saturated)
         
     def _update_stats(self, res, x_data):
+        # 1. Update Graphs
         if res.success:
             self.view.live_widget.update_fit(x_data, res.fitted_curve)
-            self.view.controls.update_stats(res.visibility, res.sigma_microns, self.model.last_saturated)
-            if self.view.tabs.currentIndex() == 1:
-                self.view.history_widget.add_point(res.sigma_microns)
         else:
             self.view.live_widget.update_fit([], [])
-            self.view.controls.update_stats(0.0, 0.0, self.model.last_saturated)
-            if self.view.tabs.currentIndex() == 1:
-                self.view.history_widget.add_point(float('nan'))
+
+        # 2. Update Text Numbers (Vis, Sigma)
+        # Note: We handle the status label manually below to prevent overwriting "FILE LOADED"
+        self.view.controls.lbl_vis.setText(f"{res.visibility:.3f}")
+        self.view.controls.lbl_sigma.setText(f"{res.sigma_microns:.1f} um")
+        
+        # 3. Update Status Label (The Fix)
+        is_saturated = self.model.last_saturated
+        
+        # Priority 1: Saturation Warning (Always show this if bad)
+        if is_saturated:
+            self.view.controls.lbl_sat.setText("SATURATED!")
+            self.view.controls.lbl_sat.setStyleSheet("color: red; font-weight: bold; background-color: yellow;")
+        
+        # Priority 2: Static File Loaded (If not live)
+        elif not self.model.is_live_running():
+            self.view.controls.lbl_sat.setText("FILE LOADED")
+            self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
+            
+        # Priority 3: Normal Live Status
+        else:
+            self.view.controls.lbl_sat.setText("OK")
+            self.view.controls.lbl_sat.setStyleSheet("color: green; font-weight: bold;")
+
+        # 4. Update History Plot
+        if res.success and self.view.tabs.currentIndex() == 1:
+            self.view.history_widget.add_point(res.sigma_microns)
 
     def _update_saturation(self, is_saturated: bool):
         if is_saturated:
@@ -323,6 +375,33 @@ class InterferometerController(QObject):
         if dir_path:
             path = DataManager.save_matlab(dir_path, "SRI_Matlab", self.model.last_raw_image, meta, res)
             QMessageBox.information(self.view, "Saved", f"Saved .mat file:\n{path}")
+
+    def _handle_load_file(self):
+        """Pauses live view and loads a static file."""
+        # Force Live View to stop so it doesn't overwrite the loaded file
+        if self.model.is_live_running():
+            self.model.stop_live()
+            # Update UI to reflect stopped state
+            self.view.controls.btn_live.setChecked(False)
+            self.view.controls.btn_live.setText("Start Live")
+            self.view.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
+
+        # Open File Dialog
+        # Support generic images AND .mat files
+        file_filter = "All Supported (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.mat);;Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;Matlab Data (*.mat)"
+        path, _ = QFileDialog.getOpenFileName(self.view, "Load Beam Image", "", file_filter)
+        
+        if not path:
+            return
+
+        # Pass to Model
+        try:
+            self.model.load_static_frame(path)
+            # Optional: Feedback to user
+            self.view.controls.lbl_sat.setText("FILE LOADED")
+            self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
+        except Exception as e:
+            QMessageBox.warning(self.view, "Load Error", f"Could not load file:\n{str(e)}")
 
     def _save_current_config(self):
         """Scrape UI settings and save to disk via ConfigManager."""

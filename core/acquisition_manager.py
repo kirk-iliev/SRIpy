@@ -44,6 +44,8 @@ class AcquisitionManager(QObject):
     burst_finished = pyqtSignal(object)
     burst_error = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
+
+    physics_loaded = pyqtSignal(float, float, float) # wavelength, slit, distance
     
     # Internal wiring
     _request_fit = pyqtSignal(object, object)
@@ -63,6 +65,7 @@ class AcquisitionManager(QObject):
         self.subtract_background = False
         self.background_frame = None
         self.saturation_threshold = 4090
+        self._static_image = None
 
         # Cached outputs (typed for IDE support)
         self.last_raw_image: Optional[npt.NDArray] = None
@@ -150,6 +153,8 @@ class AcquisitionManager(QObject):
         # Updates internal state instantly
         self.roi_slice = slice(int(y_min), int(y_max))
         self.roi_x_limits = (int(x_min), int(x_max))
+        if not self.is_live_running() and self._static_image is not None:
+            self._process_live_frame(self._static_image)
 
     def set_autocenter(self, enabled: bool):
         self.autocenter_enabled = enabled
@@ -171,6 +176,9 @@ class AcquisitionManager(QObject):
         self.fitter_burst.slit_sep = slit
         self.fitter_burst.distance = distance
 
+        if not self.is_live_running() and self._static_image is not None:
+            self._process_live_frame(self._static_image)
+
     def set_gain(self, val_db):
         if self.camera_thread is not None:
             self.camera_thread.enqueue("set_gain", val_db)
@@ -179,6 +187,8 @@ class AcquisitionManager(QObject):
 
     def set_transpose(self, enabled: bool):
         self.transpose_enabled = enabled
+        if not self.is_live_running() and self._static_image is not None:
+            self._process_live_frame(self._static_image)
 
     def toggle_background(self, enabled: bool):
         if enabled and self.background_frame is None:
@@ -239,7 +249,7 @@ class AcquisitionManager(QObject):
                 img = np.ascontiguousarray(img.T)
 
             self.last_raw_image = img
-            is_saturated = np.max(img) >= self.saturation_threshold
+            is_saturated = bool(np.max(img) >= self.saturation_threshold)
             if is_saturated != self.last_saturated:
                 self.last_saturated = is_saturated
                 self.saturation_updated.emit(is_saturated)
@@ -348,6 +358,151 @@ class AcquisitionManager(QObject):
             self._live_running = True
         self._was_live_before_burst = False
         self.burst_finished.emit(result)
+
+    def load_static_frame(self, file_path):
+        import os
+        import cv2
+        import scipy.io
+        import numpy as np
+
+        ext = os.path.splitext(file_path)[1].lower()
+        loaded_img = None
+
+        if ext == '.mat':
+            try:
+                # 1. Load the MATLAB file
+                mat = scipy.io.loadmat(file_path)
+                
+                # --- PART A: Image Extraction ---
+                candidate_keys = ['raw', 'IMG', 'img', 'image', 'data']
+                
+                def is_valid_image(arr):
+                    return isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.size > 1000 and np.issubdtype(arr.dtype, np.number)
+
+                for key, val in mat.items():
+                    if key.startswith('__'): continue
+                    
+                    # Direct check
+                    if key in candidate_keys and is_valid_image(val):
+                        loaded_img = val
+                        break
+                    
+                    # Nested check (handle different shapes safely)
+                    if isinstance(val, np.ndarray) and val.dtype.names:
+                        for sub_key in val.dtype.names:
+                            if sub_key in candidate_keys:
+                                # Safe extraction logic
+                                try:
+                                    sub_val = val[sub_key]
+                                    if sub_val.shape == (1, 1):
+                                        sub_val = sub_val[0, 0]
+                                    elif sub_val.shape == (1,):
+                                        sub_val = sub_val[0]
+                                    
+                                    if is_valid_image(sub_val):
+                                        loaded_img = sub_val
+                                        break
+                                except: continue
+                    if loaded_img is not None: break
+
+                # --- PART B: Metadata Extraction (The Fix) ---
+                print(f"Searching metadata inside {os.path.basename(file_path)}...")
+                
+                targets = {
+                    'slit': ['Slit_Separation', 'slit_sep', 'Separation', 'd', 'D', 'slit'],
+                    'dist': ['L', 'distance', 'Distance', 'z', 'dist'],
+                    'wave': ['Lambda', 'lambda', 'wavelength', 'wl']
+                }
+                found_params = {}
+
+                def hunt_for_keys(data_dict):
+                    for key, val in data_dict.items():
+                        if key.startswith('__'): continue
+                        
+                        # 1. Check if this key is a target
+                        for param_name, aliases in targets.items():
+                            if param_name not in found_params and key in aliases:
+                                try:
+                                    # Safe scalar extraction
+                                    scalar = val
+                                    while isinstance(scalar, np.ndarray) and scalar.size == 1:
+                                        scalar = scalar.flat[0]
+                                    
+                                    found_params[param_name] = float(scalar)
+                                    print(f"  FOUND {param_name}: '{key}' = {scalar}")
+                                except: pass
+                        
+                        # 2. If it's a struct, recurse safely
+                        if isinstance(val, np.ndarray) and val.dtype.names:
+                            # Handle both (1,1) and (1,) shapes
+                            if val.size == 1:
+                                element = val.flat[0] # This gets the void object safely
+                                # Create dictionary from void object
+                                sub_dict = {n: element[n] for n in element.dtype.names}
+                                hunt_for_keys(sub_dict)
+
+                hunt_for_keys(mat)
+
+                hunt_for_keys(mat)
+
+                if found_params:
+                    # Get defaults (in Display Units: nm, mm, m)
+                    curr_wave_nm = self.fitter.wavelength * 1e9
+                    curr_slit_mm = self.fitter.slit_sep * 1e3
+                    curr_dist_m = self.fitter.distance
+                    
+                    # 1. Retrieve Raw Values
+                    raw_wave = found_params.get('wave', curr_wave_nm)
+                    raw_slit = found_params.get('slit', curr_slit_mm)
+                    raw_dist = found_params.get('dist', curr_dist_m)
+                    
+                    # 2. Heuristic Unit Conversion (The Fix)
+                    
+                    # Wavelength: If < 1.0, it's likely Meters. Convert to nm.
+                    if raw_wave < 1.0: 
+                        new_wave_nm = raw_wave * 1e9
+                    else:
+                        new_wave_nm = raw_wave
+                        
+                    # Slit: If < 0.1, it's likely Meters. Convert to mm.
+                    # (Standard slits are 10mm - 50mm. 0.05m = 50mm)
+                    if raw_slit < 0.1: 
+                        new_slit_mm = raw_slit * 1e3
+                    else:
+                        new_slit_mm = raw_slit
+                        
+                    # Distance: Usually meters, but sanity check.
+                    new_dist_m = raw_dist
+
+                    # 3. Update Physics (Convert Display -> SI for engine)
+                    self.set_physics_params(new_wave_nm * 1e-9, new_slit_mm * 1e-3, new_dist_m)
+                    
+                    # 4. Update UI (Send Display Units)
+                    if hasattr(self, 'physics_loaded'):
+                        self.physics_loaded.emit(new_wave_nm, new_slit_mm, new_dist_m)
+                        
+                    print(f"Physics Loaded: λ={new_wave_nm:.1f}nm, d={new_slit_mm:.2f}mm, L={new_dist_m:.2f}m")
+                else:
+                    print("  WARNING: No physics parameters found.")
+
+            except Exception as e:
+                print(f"Error parsing .mat: {e}")
+                # Don't crash the app, just log it
+                pass
+
+        elif ext in ['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp']:
+             loaded_img = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
+             if loaded_img is not None and loaded_img.ndim == 3:
+                 loaded_img = np.mean(loaded_img, axis=2)
+
+        if loaded_img is None:
+            raise ValueError("Could not find image data")
+
+        loaded_img = loaded_img.astype(np.float32)
+        self._static_image = loaded_img.copy()
+        
+        # Crash Fix: Ensure saturation check in _process_live_frame is cast to bool
+        self._process_live_frame(loaded_img)
 
     def shutdown(self):
         self.stop_live()

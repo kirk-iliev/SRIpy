@@ -11,3 +11,9 @@ pyqtgraph>=0.13.0
 
 # Unit Testing
 pytest>=7.3.0
+
+# Static image analysis
+opencv-python>=4.7.0
+
+# Colormaps
+matplotlib>=3.7.0

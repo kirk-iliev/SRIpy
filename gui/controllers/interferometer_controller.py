@@ -82,23 +82,23 @@ class InterferometerController(QObject):
         """Updates UI spinners without triggering feedback loops."""
         controls = self.view.controls
         
-        # 1. Block signals so updating the UI doesn't accidentally trigger 
-        #    a "value changed" event that sends data back to the model.
+        # Block signals so updating the UI doesn't accidentally trigger 
+        # a "value changed" event that sends data back to the model.
         controls.spin_lambda.blockSignals(True)
         controls.spin_slit.blockSignals(True)
         controls.spin_dist.blockSignals(True)
         
-        # 2. Update the values
+        # Update the values
         controls.spin_lambda.setValue(float(wave_nm))
         controls.spin_slit.setValue(float(slit_mm))
         controls.spin_dist.setValue(float(dist_m))
         
-        # 3. Unblock signals
+        # Unblock signals
         controls.spin_lambda.blockSignals(False)
         controls.spin_slit.blockSignals(False)
         controls.spin_dist.blockSignals(False)
         
-        # Optional: Flash the values or log to status bar to show user it happened
+        # Flash the values or log to status bar to show user it happened
         self.view.controls.lbl_sat.setText("PARAMS LOADED")
         self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
 
@@ -245,36 +245,36 @@ class InterferometerController(QObject):
         self._update_saturation(self.model.last_saturated)
         
     def _update_stats(self, res, x_data):
-        # 1. Update Graphs
+        # Update Graphs
         if res.success:
             self.view.live_widget.update_fit(x_data, res.fitted_curve)
         else:
             self.view.live_widget.update_fit([], [])
 
-        # 2. Update Text Numbers (Vis, Sigma)
+        # Update Text Numbers (Vis, Sigma)
         # Note: We handle the status label manually below to prevent overwriting "FILE LOADED"
         self.view.controls.lbl_vis.setText(f"{res.visibility:.3f}")
         self.view.controls.lbl_sigma.setText(f"{res.sigma_microns:.1f} um")
         
-        # 3. Update Status Label (The Fix)
+        # Update Status Label (The Fix)
         is_saturated = self.model.last_saturated
         
-        # Priority 1: Saturation Warning (Always show this if bad)
+        # Saturation Warning (Always show this if bad)
         if is_saturated:
             self.view.controls.lbl_sat.setText("SATURATED!")
             self.view.controls.lbl_sat.setStyleSheet("color: red; font-weight: bold; background-color: yellow;")
         
-        # Priority 2: Static File Loaded (If not live)
+        # Static File Loaded (If not live)
         elif not self.model.is_live_running():
             self.view.controls.lbl_sat.setText("FILE LOADED")
             self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
             
-        # Priority 3: Normal Live Status
+        # Normal Live Status
         else:
             self.view.controls.lbl_sat.setText("OK")
             self.view.controls.lbl_sat.setStyleSheet("color: green; font-weight: bold;")
 
-        # 4. Update History Plot
+        # Update History Plot
         if res.success and self.view.tabs.currentIndex() == 1:
             self.view.history_widget.add_point(res.sigma_microns)
 
@@ -292,7 +292,6 @@ class InterferometerController(QObject):
         """Display error to user via console and status bar."""
         import logging
         logging.getLogger(__name__).error(f"Error: {msg}")
-        # Also update UI status to alert user
         self.view.controls.lbl_sat.setText("ERROR")
         self.view.controls.lbl_sat.setStyleSheet(
             "color: white; font-weight: bold; background-color: red;"
@@ -397,7 +396,6 @@ class InterferometerController(QObject):
         # Pass to Model
         try:
             self.model.load_static_frame(path)
-            # Optional: Feedback to user
             self.view.controls.lbl_sat.setText("FILE LOADED")
             self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
         except Exception as e:
@@ -437,7 +435,7 @@ class InterferometerController(QObject):
         self.model.config_manager.save(ui_config)
 
     def cleanup(self, event):
-        # FIX: Save settings before shutting down, but ensure shutdown happens
+        # Save settings before shutting down, but ensure shutdown happens
         try:
             self._save_current_config()
         except Exception as e:

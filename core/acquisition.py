@@ -75,8 +75,6 @@ class BurstWorker(QObject):
                     img = np.ascontiguousarray(img.T)
 
                 # Extract lineout with proper ROI handling
-                # NOTE: roi_slice and roi_x_map are always in ORIGINAL (non-transposed) coordinates
-                # We must swap them if transpose is enabled
                 if self.transpose and self.roi_slice:
                     # After transpose: image is (orig_width, orig_height)
                     # roi_x_map (original column range) now indexes height
@@ -90,7 +88,7 @@ class BurstWorker(QObject):
                     lineout = self.fitter.get_lineout(img)
                 
                 # Apply X-ROI (width crop)
-                # After transpose swap, we need to use roi_slice for column cropping
+                # After transpose swap, use roi_slice for column cropping
                 if self.transpose and self.roi_slice:
                     # Columns are original rows
                     x_min, x_max = int(self.roi_slice.start), int(self.roi_slice.stop)

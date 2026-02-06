@@ -254,9 +254,6 @@ class AcquisitionManager(QObject):
                 self.last_saturated = is_saturated
                 self.saturation_updated.emit(is_saturated)
 
-            # 2. Cache ROI locally (No UI reads)
-            # NOTE: roi_slice and roi_x_limits are stored in ORIGINAL (non-transposed) coordinates
-            # We must swap them for display-space operations when transpose is enabled
             h, w = img.shape
 
             if self.transpose_enabled:
@@ -300,12 +297,11 @@ class AcquisitionManager(QObject):
             # Extract lineout by summing the selected rows in display space
             lineout = np.sum(img[disp_row_start:disp_row_stop, :], axis=0)
 
-            # 3. Auto-Center (Logic only, no UI updates)
+            # Auto-Center
             if self.autocenter_enabled:
-                # FIX: Handle potential NaN/Inf in lineout just in case
+                # Handle potential NaN/Inf in lineout 
                 if np.all(np.isfinite(lineout)):
                     peak_idx = np.argmax(lineout)
-                    # Only auto-center if we have a real signal (noise floor check)
                     if lineout[peak_idx] > self._autocenter_min_signal:
                         current_w = disp_col_stop - disp_col_start
                         new_min = max(0, peak_idx - current_w // 2)
@@ -333,11 +329,11 @@ class AcquisitionManager(QObject):
                                     self.roi_x_limits[1],
                                 )
 
-            # 4. Emit Data
+            # Emit Data
             self.last_lineout = lineout
             self.live_data_ready.emit(img, lineout)
             
-            # 5. Analysis
+            # Analysis
             now = time.time()
             if self._analysis_busy and (now - self._last_fit_request_time) <= self._analysis_timeout_s:
                 return
@@ -370,7 +366,7 @@ class AcquisitionManager(QObject):
 
         if ext == '.mat':
             try:
-                # 1. Load the MATLAB file
+                # Load the MATLAB file
                 mat = scipy.io.loadmat(file_path)
                 
                 # --- PART A: Image Extraction ---
@@ -432,7 +428,6 @@ class AcquisitionManager(QObject):
                                     print(f"  FOUND {param_name}: '{key}' = {scalar}")
                                 except: pass
                         
-                        # 2. If it's a struct, recurse safely
                         if isinstance(val, np.ndarray) and val.dtype.names:
                             # Handle both (1,1) and (1,) shapes
                             if val.size == 1:
@@ -446,17 +441,13 @@ class AcquisitionManager(QObject):
                 hunt_for_keys(mat)
 
                 if found_params:
-                    # Get defaults (in Display Units: nm, mm, m)
                     curr_wave_nm = self.fitter.wavelength * 1e9
                     curr_slit_mm = self.fitter.slit_sep * 1e3
                     curr_dist_m = self.fitter.distance
                     
-                    # 1. Retrieve Raw Values
                     raw_wave = found_params.get('wave', curr_wave_nm)
                     raw_slit = found_params.get('slit', curr_slit_mm)
-                    raw_dist = found_params.get('dist', curr_dist_m)
-                    
-                    # 2. Heuristic Unit Conversion (The Fix)
+                    raw_dist = found_params.get('dist', curr_dist_m)               
                     
                     # Wavelength: If < 1.0, it's likely Meters. Convert to nm.
                     if raw_wave < 1.0: 
@@ -474,10 +465,10 @@ class AcquisitionManager(QObject):
                     # Distance: Usually meters, but sanity check.
                     new_dist_m = raw_dist
 
-                    # 3. Update Physics (Convert Display -> SI for engine)
+                    # Update Physics (Convert Display -> SI for engine)
                     self.set_physics_params(new_wave_nm * 1e-9, new_slit_mm * 1e-3, new_dist_m)
                     
-                    # 4. Update UI (Send Display Units)
+                    # Update UI (Send Display Units)
                     if hasattr(self, 'physics_loaded'):
                         self.physics_loaded.emit(new_wave_nm, new_slit_mm, new_dist_m)
                         
@@ -501,7 +492,6 @@ class AcquisitionManager(QObject):
         loaded_img = loaded_img.astype(np.float32)
         self._static_image = loaded_img.copy()
         
-        # Crash Fix: Ensure saturation check in _process_live_frame is cast to bool
         self._process_live_frame(loaded_img)
 
     def shutdown(self):

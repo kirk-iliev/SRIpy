@@ -40,7 +40,7 @@ class LiveMonitorWidget(QWidget):
         # Bounds will be set dynamically in update_image
         self.image_plot.addItem(self.roi_rows)
 
-        # FIX: Connect Vertical ROI signals
+        # Connect Vertical ROI signals
         self.roi_rows.sigRegionChanged.connect(self._handle_region_change)
         self.roi_rows.sigRegionChangeFinished.connect(lambda: self.roi_drag_end.emit())
 
@@ -56,7 +56,7 @@ class LiveMonitorWidget(QWidget):
         # Bounds will be set dynamically in update_image
         self.lineout_plot.addItem(self.roi_fit_width)
 
-        # FIX: Connect Horizontal ROI signals
+        # Connect Horizontal ROI signals
         self.roi_fit_width.sigRegionChanged.connect(self._handle_region_change)
         self.roi_fit_width.sigRegionChangeFinished.connect(lambda: self.roi_drag_end.emit())
 

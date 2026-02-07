@@ -22,13 +22,14 @@ The `_process_live_frame()` method maps between these coordinate systems:
 """
 import logging
 import time
+import threading
 import numpy as np
 from typing import Optional, Tuple
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 import numpy.typing as npt
 
 from hardware.manta_driver import MantaDriver
-from hardware.camera_io_thread import CameraIoThread
+from hardware.camera_io_thread import CameraIoThread, CameraCommand
 from core.config_manager import ConfigManager
 from analysis.fitter import InterferenceFitter, FitResult
 from analysis.analysis_worker import AnalysisWorker
@@ -39,6 +40,8 @@ class AcquisitionManager(QObject):
     fit_result_ready = pyqtSignal(object, object) # Emits (result, x_axis)
     roi_updated = pyqtSignal(float, float, float, float)  # y_min, y_max, x_min, x_max
     saturation_updated = pyqtSignal(bool)
+    background_ready = pyqtSignal(object)
+    live_state_changed = pyqtSignal(bool)
     
     burst_progress = pyqtSignal(int)
     burst_finished = pyqtSignal(object)
@@ -48,7 +51,7 @@ class AcquisitionManager(QObject):
     physics_loaded = pyqtSignal(float, float, float) # wavelength, slit, distance
     
     # Internal wiring
-    _request_fit = pyqtSignal(object, object)
+    _request_fit = pyqtSignal(object, object, int)
 
     def __init__(self):
         super().__init__()
@@ -66,6 +69,7 @@ class AcquisitionManager(QObject):
         self.background_frame = None
         self.saturation_threshold = 4090
         self._static_image = None
+        self._static_mode = False
 
         # Cached outputs (typed for IDE support)
         self.last_raw_image: Optional[npt.NDArray] = None
@@ -77,6 +81,8 @@ class AcquisitionManager(QObject):
         # Analysis throttling
         self._analysis_busy = False
         self._last_fit_request_time = 0.0
+        self._fit_request_id = 0
+        self._inflight_fit_id: Optional[int] = None
         self._live_running = False
         self._was_live_before_burst = False
         
@@ -84,6 +90,7 @@ class AcquisitionManager(QObject):
         self.driver = MantaDriver()
         self.fitter = InterferenceFitter()
         self.fitter_burst = InterferenceFitter()
+        self._fitter_lock = threading.Lock()
         
         # Threads (deferred to initialize() to avoid orphan threads on connection failure)
         self.camera_thread: Optional[CameraIoThread] = None
@@ -111,15 +118,16 @@ class AcquisitionManager(QObject):
             self.camera_thread = CameraIoThread(self.driver, self.fitter_burst)
             self.camera_thread.frame_ready.connect(self._process_live_frame)
             self.camera_thread.background_ready.connect(self._handle_background_frame)
+            self.camera_thread.live_state_changed.connect(self._handle_live_state)
             self.camera_thread.burst_progress.connect(self.burst_progress.emit)
             self.camera_thread.burst_finished.connect(self._handle_burst_finished)
-            self.camera_thread.burst_error.connect(self.burst_error.emit)
+            self.camera_thread.burst_error.connect(self._handle_burst_error)
             self.camera_thread.error.connect(self.error_occurred.emit)
             self.camera_thread.start()
 
     def _setup_analysis_thread(self):
         self.an_thread = QThread()
-        self.an_worker = AnalysisWorker(self.fitter)
+        self.an_worker = AnalysisWorker(self.fitter, self._fitter_lock)
         self.an_worker.moveToThread(self.an_thread)
         self._request_fit.connect(self.an_worker.process_fit)
         self.an_worker.result_ready.connect(self._handle_fit_result)
@@ -140,8 +148,9 @@ class AcquisitionManager(QObject):
         self._analysis_timeout_s = float(analysis_cfg.get('analysis_timeout_s', 3.0))
         self._default_burst_frames = int(c.get('burst', {}).get('default_frames', 50))
         
-        self.fitter.min_signal = min_sig
-        self.fitter_burst.min_signal = min_sig
+        with self._fitter_lock:
+            self.fitter.min_signal = min_sig
+            self.fitter_burst.min_signal = min_sig
         self.set_physics_params(
             c['physics']['wavelength_nm'] * 1e-9,
             c['physics']['slit_separation_mm'] * 1e-3,
@@ -161,27 +170,28 @@ class AcquisitionManager(QObject):
 
     def set_exposure(self, val_ms):
         if self.camera_thread is not None:
-            self.camera_thread.enqueue("set_exposure", val_ms)
+            self.camera_thread.enqueue(CameraCommand.SET_EXPOSURE, val_ms)
         if self.subtract_background:
             self.subtract_background = False # Auto-reset background
 
     def set_physics_params(self, wavelength, slit, distance):
         """Called by Controller to update physics constants."""
-        self.fitter.wavelength = wavelength
-        self.fitter.slit_sep = slit
-        self.fitter.distance = distance
-        
-        # Sync burst fitter too so high-speed capture uses same math
-        self.fitter_burst.wavelength = wavelength
-        self.fitter_burst.slit_sep = slit
-        self.fitter_burst.distance = distance
+        with self._fitter_lock:
+            self.fitter.wavelength = wavelength
+            self.fitter.slit_sep = slit
+            self.fitter.distance = distance
+            
+            # Sync burst fitter too so high-speed capture uses same math
+            self.fitter_burst.wavelength = wavelength
+            self.fitter_burst.slit_sep = slit
+            self.fitter_burst.distance = distance
 
         if not self.is_live_running() and self._static_image is not None:
             self._process_live_frame(self._static_image)
 
     def set_gain(self, val_db):
         if self.camera_thread is not None:
-            self.camera_thread.enqueue("set_gain", val_db)
+            self.camera_thread.enqueue(CameraCommand.SET_GAIN, val_db)
         if self.subtract_background:
             self.subtract_background = False
 
@@ -200,24 +210,26 @@ class AcquisitionManager(QObject):
     def capture_background(self):
         if self.camera_thread is None:
             return
-        self.camera_thread.enqueue("capture_background")
+        self.camera_thread.enqueue(CameraCommand.CAPTURE_BACKGROUND)
 
     def start_live(self):
         if self.is_live_running():
             return
         if self.camera_thread is None:
             return
-        self._live_running = True
-        self.camera_thread.enqueue("start_live")
+        self._static_mode = False
+        self.camera_thread.enqueue(CameraCommand.START_LIVE)
 
     def stop_live(self):
         if self.camera_thread is None:
             return
-        self._live_running = False
-        self.camera_thread.enqueue("stop_live")
+        self.camera_thread.enqueue(CameraCommand.STOP_LIVE)
 
     def is_live_running(self):
         return self._live_running
+
+    def is_static_mode(self) -> bool:
+        return self._static_mode
 
     def start_burst(self, n_frames):
         if self.camera_thread is None:
@@ -225,7 +237,7 @@ class AcquisitionManager(QObject):
         self._was_live_before_burst = self._live_running
         self._live_running = False
         self.camera_thread.enqueue(
-            "start_burst",
+            CameraCommand.START_BURST,
             n_frames,
             self.roi_slice,
             self.roi_x_limits,
@@ -338,26 +350,39 @@ class AcquisitionManager(QObject):
             if self._analysis_busy and (now - self._last_fit_request_time) <= self._analysis_timeout_s:
                 return
             if self._analysis_busy and (now - self._last_fit_request_time) > self._analysis_timeout_s:
+                self.logger.warning("Analysis timeout; dropping in-flight fit")
                 self._analysis_busy = False
+                self._inflight_fit_id = None
             if disp_col_stop > disp_col_start:
                 fit_y = lineout[disp_col_start:disp_col_stop]
                 fit_x = np.arange(disp_col_start, disp_col_stop)
                 self._analysis_busy = True
                 self._last_fit_request_time = now
-                self._request_fit.emit(fit_y, fit_x)
+                self._fit_request_id += 1
+                self._inflight_fit_id = self._fit_request_id
+                self._request_fit.emit(fit_y, fit_x, self._fit_request_id)
 
         except Exception as e:
             self.logger.error(f"Processing error: {e}")
 
     def _handle_burst_finished(self, result):
-        if self._was_live_before_burst:
-            self._live_running = True
         self._was_live_before_burst = False
         self.burst_finished.emit(result)
 
+    def _handle_burst_error(self, msg: str):
+        self._was_live_before_burst = False
+        self.burst_error.emit(msg)
+
+    def _handle_live_state(self, is_live: bool) -> None:
+        self._live_running = is_live
+        self.live_state_changed.emit(is_live)
+
     def load_static_frame(self, file_path):
         import os
-        import cv2
+        try:
+            import cv2
+        except Exception as e:
+            raise RuntimeError("OpenCV is required to load image files. Please install opencv-python.") from e
         import scipy.io
         import numpy as np
 
@@ -398,11 +423,15 @@ class AcquisitionManager(QObject):
                                     if is_valid_image(sub_val):
                                         loaded_img = sub_val
                                         break
-                                except: continue
+                                except Exception as e:
+                                    self.logger.debug(f"Skipping nested key {sub_key}: {e}")
+                                    continue
                     if loaded_img is not None: break
 
                 # --- PART B: Metadata Extraction (The Fix) ---
-                print(f"Searching metadata inside {os.path.basename(file_path)}...")
+                self.logger.info(
+                    f"Searching metadata inside {os.path.basename(file_path)}..."
+                )
                 
                 targets = {
                     'slit': ['Slit_Separation', 'slit_sep', 'Separation', 'd', 'D', 'slit'],
@@ -425,8 +454,13 @@ class AcquisitionManager(QObject):
                                         scalar = scalar.flat[0]
                                     
                                     found_params[param_name] = float(scalar)
-                                    print(f"  FOUND {param_name}: '{key}' = {scalar}")
-                                except: pass
+                                    self.logger.info(
+                                        f"Found {param_name}: '{key}' = {scalar}"
+                                    )
+                                except Exception as e:
+                                    self.logger.debug(
+                                        f"Failed to parse metadata key {key}: {e}"
+                                    )
                         
                         if isinstance(val, np.ndarray) and val.dtype.names:
                             # Handle both (1,1) and (1,) shapes
@@ -435,8 +469,6 @@ class AcquisitionManager(QObject):
                                 # Create dictionary from void object
                                 sub_dict = {n: element[n] for n in element.dtype.names}
                                 hunt_for_keys(sub_dict)
-
-                hunt_for_keys(mat)
 
                 hunt_for_keys(mat)
 
@@ -472,14 +504,14 @@ class AcquisitionManager(QObject):
                     if hasattr(self, 'physics_loaded'):
                         self.physics_loaded.emit(new_wave_nm, new_slit_mm, new_dist_m)
                         
-                    print(f"Physics Loaded: λ={new_wave_nm:.1f}nm, d={new_slit_mm:.2f}mm, L={new_dist_m:.2f}m")
+                    self.logger.info(
+                        f"Physics Loaded: λ={new_wave_nm:.1f}nm, d={new_slit_mm:.2f}mm, L={new_dist_m:.2f}m"
+                    )
                 else:
-                    print("  WARNING: No physics parameters found.")
+                    self.logger.warning("No physics parameters found in .mat metadata.")
 
             except Exception as e:
-                print(f"Error parsing .mat: {e}")
-                # Don't crash the app, just log it
-                pass
+                self.logger.error(f"Error parsing .mat: {e}", exc_info=True)
 
         elif ext in ['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp']:
              loaded_img = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
@@ -491,6 +523,7 @@ class AcquisitionManager(QObject):
 
         loaded_img = loaded_img.astype(np.float32)
         self._static_image = loaded_img.copy()
+        self._static_mode = True
         
         self._process_live_frame(loaded_img)
 
@@ -500,18 +533,23 @@ class AcquisitionManager(QObject):
             self.an_thread.quit()
             self.an_thread.wait(2000)
         if self.camera_thread is not None:
-            self.camera_thread.enqueue("shutdown")
+            self.camera_thread.enqueue(CameraCommand.SHUTDOWN)
             self.camera_thread.wait(2000)
         if self.driver: self.driver.close()
 
     def _handle_background_frame(self, frame):
         if frame is None:
+            self.background_ready.emit(None)
             return
         self.background_frame = frame.squeeze().astype(np.float32)
         self.subtract_background = True
+        self.background_ready.emit(self.background_frame)
 
-    def _handle_fit_result(self, result, x_axis):
+    def _handle_fit_result(self, result, x_axis, req_id: int):
+        if self._inflight_fit_id is not None and req_id != self._inflight_fit_id:
+            return
         self._analysis_busy = False
+        self._inflight_fit_id = None
         self.last_fit_result = result
         self.last_fit_x = x_axis
         self.fit_result_ready.emit(result, x_axis)

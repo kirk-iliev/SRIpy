@@ -13,8 +13,9 @@ from vmbpy import (
     VmbFeatureError,
 )
 from typing import Any, cast
+from hardware.camera_interface import CameraInterface
 
-class MantaDriver:
+class MantaDriver(CameraInterface):
 
     def __init__(self, camera_id: Optional[str] = None):
         self.camera_id = camera_id

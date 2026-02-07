@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 from PyQt6.QtCore import QObject
 from PyQt6.QtWidgets import QMessageBox, QFileDialog
@@ -66,6 +67,8 @@ class InterferometerController(QObject):
         self.model.error_occurred.connect(self._show_error)
         self.model.roi_updated.connect(self._apply_model_roi)
         self.model.saturation_updated.connect(self._update_saturation)
+        self.model.background_ready.connect(self._handle_background_ready)
+        self.model.live_state_changed.connect(self._handle_live_state)
         
         # Burst Status
         self.model.burst_progress.connect(self.view.controls.progress_bar.setValue)
@@ -190,29 +193,52 @@ class InterferometerController(QObject):
     def _handle_live_toggle(self, checked):
         if checked:
             self.model.start_live()
+        else:
+            self.model.stop_live()
+
+    def _handle_live_state(self, is_live: bool) -> None:
+        self.view.controls.btn_live.blockSignals(True)
+        try:
+            self.view.controls.btn_live.setChecked(is_live)
+        finally:
+            self.view.controls.btn_live.blockSignals(False)
+
+        if is_live:
             self.view.controls.btn_live.setText("Stop Live")
             self.view.controls.btn_live.setStyleSheet("background-color: red; color: white; font-weight: bold;")
         else:
-            self.model.stop_live()
             self.view.controls.btn_live.setText("Start Live")
             self.view.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
 
     def _handle_bg_acquire(self):
         self.model.capture_background()
-        if self.model.background_frame is not None:
-            self.view.controls.chk_bg.setEnabled(True)
-            self.view.controls.chk_bg.setChecked(True)
+
+    def _handle_background_ready(self, frame):
+        if frame is None:
+            self.view.controls.chk_bg.setEnabled(False)
+            self.view.controls.chk_bg.setChecked(False)
+            return
+        self.view.controls.chk_bg.setEnabled(True)
+        self.view.controls.chk_bg.setChecked(True)
 
     def _handle_burst(self):
+        # FIX: Reset progress bar to 0 before showing it
+        self.view.controls.progress_bar.setValue(0)
         self.view.controls.progress_bar.setVisible(True)
+        
+        # Disable ALL acquisition triggers
         self.view.controls.btn_burst.setEnabled(False)
         self.view.controls.btn_live.setEnabled(False)
+        self.view.controls.btn_bg.setEnabled(False) # Disable background button too
+        
         self.model.start_burst(self.model._default_burst_frames) 
 
     def _handle_burst_finished(self, res):
         self.view.controls.progress_bar.setVisible(False)
         self.view.controls.btn_burst.setEnabled(True)
         self.view.controls.btn_live.setEnabled(True)
+        self.view.controls.btn_bg.setEnabled(True) # Re-enable background button
+        
         if self.model.is_live_running():
             self.view.controls.btn_live.setChecked(True)
             self.view.controls.btn_live.setText("Stop Live")
@@ -229,6 +255,8 @@ class InterferometerController(QObject):
         self.view.controls.progress_bar.setVisible(False)
         self.view.controls.btn_burst.setEnabled(True)
         self.view.controls.btn_live.setEnabled(True)
+        self.view.controls.btn_bg.setEnabled(True)
+        
         if self.model.is_live_running():
             self.view.controls.btn_live.setChecked(True)
             self.view.controls.btn_live.setText("Stop Live")
@@ -264,8 +292,8 @@ class InterferometerController(QObject):
             self.view.controls.lbl_sat.setText("SATURATED!")
             self.view.controls.lbl_sat.setStyleSheet("color: red; font-weight: bold; background-color: yellow;")
         
-        # Static File Loaded (If not live)
-        elif not self.model.is_live_running():
+        # Static File Loaded (If viewing a loaded file)
+        elif self.model.is_static_mode():
             self.view.controls.lbl_sat.setText("FILE LOADED")
             self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
             
@@ -412,26 +440,34 @@ class InterferometerController(QObject):
             rows_min, rows_max = rows[0], rows[1]
             fit_width_min, fit_width_max = width[0], width[1]
 
-        ui_config = {
-            "camera": {
-                "exposure_ms": self.view.controls.spin_exp.value(),
-                "gain_db": self.view.controls.spin_gain.value(),
-                "transpose": self.view.controls.chk_transpose.isChecked(),
-                "saturation_threshold": self.model.saturation_threshold
-            },
-            "physics": {
-                "wavelength_nm": self.view.controls.spin_lambda.value(),
-                "slit_separation_mm": self.view.controls.spin_slit.value(),
-                "distance_m": self.view.controls.spin_dist.value()
-            },
-            "roi": {
-                "rows_min": rows_min,
-                "rows_max": rows_max,
-                "fit_width_min": fit_width_min,
-                "fit_width_max": fit_width_max,
-                "auto_center": self.view.controls.chk_autocenter.isChecked()
-            }
+        ui_config = copy.deepcopy(self.model.cfg)
+
+        ui_config["camera"] = {
+            "exposure_ms": self.view.controls.spin_exp.value(),
+            "gain_db": self.view.controls.spin_gain.value(),
+            "transpose": self.view.controls.chk_transpose.isChecked(),
+            "subtract_background": self.view.controls.chk_bg.isChecked(),
+            "saturation_threshold": self.model.saturation_threshold,
         }
+        ui_config["physics"] = {
+            "wavelength_nm": self.view.controls.spin_lambda.value(),
+            "slit_separation_mm": self.view.controls.spin_slit.value(),
+            "distance_m": self.view.controls.spin_dist.value(),
+        }
+        ui_config["roi"] = {
+            "rows_min": rows_min,
+            "rows_max": rows_max,
+            "fit_width_min": fit_width_min,
+            "fit_width_max": fit_width_max,
+            "auto_center": self.view.controls.chk_autocenter.isChecked(),
+        }
+        ui_config.setdefault("analysis", {})
+        ui_config.setdefault("burst", {})
+        ui_config["analysis"]["min_signal_threshold"] = self.model.fitter.min_signal
+        ui_config["analysis"]["autocenter_min_signal"] = self.model._autocenter_min_signal
+        ui_config["analysis"]["analysis_timeout_s"] = self.model._analysis_timeout_s
+        ui_config["burst"]["default_frames"] = self.model._default_burst_frames
+
         self.model.config_manager.save(ui_config)
 
     def cleanup(self, event):

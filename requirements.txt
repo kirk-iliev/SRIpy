@@ -8,12 +8,8 @@ vmbpy>=1.0.4
 # UI Framework & Plotting
 PyQt6>=6.4.0
 pyqtgraph>=0.13.0
+matplotlib>=3.7.0
+opencv-python>=4.8.0
 
 # Unit Testing
 pytest>=7.3.0
-
-# Static image analysis
-opencv-python>=4.7.0
-
-# Colormaps
-matplotlib>=3.7.0

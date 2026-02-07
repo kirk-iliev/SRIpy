@@ -1,9 +1,18 @@
 {
     "camera": {
         "exposure_ms": 6.5,
-        "gain_db": 5.0,
-        "transpose": true,
+        "gain_db": 2.0,
+        "transpose": false,
+        "subtract_background": false,
         "saturation_threshold": 4090
+    },
+    "analysis": {
+        "min_signal_threshold": 50,
+        "autocenter_min_signal": 200.0,
+        "analysis_timeout_s": 3.0
+    },
+    "burst": {
+        "default_frames": 50
     },
     "physics": {
         "wavelength_nm": 550.0,
@@ -12,9 +21,9 @@
     },
     "roi": {
         "rows_min": 0,
-        "rows_max": 768,
-        "fit_width_min": 215.08000028855042,
-        "fit_width_max": 972.1717262347094,
+        "rows_max": 1216,
+        "fit_width_min": 30,
+        "fit_width_max": 1936,
         "auto_center": false
     }
 }

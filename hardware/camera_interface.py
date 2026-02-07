@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import numpy as np
+from typing import Optional
 
 class CameraInterface(ABC):
     """ Abstract base class for camera interfaces """
@@ -20,6 +21,7 @@ class CameraInterface(ABC):
     def exposure(self, exposure_time_s: float):
         """Set camera exposure time in seconds"""
         pass
+        
     @property
     @abstractmethod
     def gain(self) -> float:
@@ -33,15 +35,12 @@ class CameraInterface(ABC):
         pass
 
     @abstractmethod
-    def acquire_frame(self) -> np.ndarray:
-        """Acquire a single frame from the camera
-        Returns: 2D numpy array"""
+    def acquire_frame(self, timeout: float = 3.0) -> Optional[np.ndarray]:
+        """Acquire a single frame from the camera. Returns None on timeout."""
         pass
 
-    
     @abstractmethod
     def close(self):
         """Close camera connection and release resources safely"""
         pass
-
     

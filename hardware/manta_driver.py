@@ -94,7 +94,9 @@ class MantaDriver(CameraInterface):
                     feat.set(1400)  # type: ignore
                     break
                 except VmbFeatureError:
-                    pass
+                    self.logger.debug(f"Packet size feature {feature_name} not settable")
+            else:
+                self.logger.debug(f"Packet size feature {feature_name} not available")
 
         # Setup Software Triggering
         try:
@@ -120,7 +122,9 @@ class MantaDriver(CameraInterface):
                 target_fmt = 'Mono12' if 'Mono12' in available else 'Mono8'
                 pix_fmt.set(target_fmt)  # type: ignore
             except VmbFeatureError:
-                pass
+                self.logger.debug("Pixel format set failed")
+        else:
+            self.logger.debug("PixelFormat feature not available")
 
     @property
     def exposure(self) -> float:
@@ -184,8 +188,8 @@ class MantaDriver(CameraInterface):
                     if not accepting:
                         try:
                             cam.queue_frame(frame)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            self.logger.debug(f"Failed to re-queue frame during shutdown: {e}")
                         return
 
                     try:
@@ -195,7 +199,7 @@ class MantaDriver(CameraInterface):
                                 try:
                                     self._frame_queue.get_nowait()
                                 except queue.Empty:
-                                    pass
+                                    self.logger.debug("Frame queue empty while trimming")
 
                             arr = frame.as_numpy_ndarray().copy()
                             # Use block=True with timeout to ensure frame is queued
@@ -411,4 +415,6 @@ class MantaDriver(CameraInterface):
     def _get_feature(self, name: str):
         if not self._cam: return None
         try: return self._cam.get_feature_by_name(name)
-        except VmbFeatureError: return None
+        except VmbFeatureError as e:
+            self.logger.debug(f"Feature not available: {name} ({e})")
+            return None

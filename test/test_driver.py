@@ -1,6 +1,9 @@
+import logging
 from hardware.manta_driver import MantaDriver
 import matplotlib.pyplot as plt
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 def main():
     driver = MantaDriver()
@@ -11,13 +14,13 @@ def main():
         driver.exposure = 0.5 
         driver.gain = 20  # Crank the gain just for this test
         
-        print("Acquiring image...")
+        logger.info("Acquiring image...")
         img = driver.acquire_frame()
         
         # Squeeze the extra dimension: (1216, 1936, 1) -> (1216, 1936)
         img = img.squeeze()
         
-        print(f"Stats: Min={img.min()}, Max={img.max()}, Mean={img.mean():.2f}")
+        logger.info(f"Stats: Min={img.min()}, Max={img.max()}, Mean={img.mean():.2f}")
         
         # Plot with "auto-scaling" based on percentile to ignore hot pixels
         # This forces the colormap to stretch effectively

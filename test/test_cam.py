@@ -1,12 +1,15 @@
+import logging
 from vmbpy import *
 
+logger = logging.getLogger(__name__)
+
 def test_camera():
-    print("Initializing Vimba...")
+    logger.info("Initializing Vimba...")
     with VmbSystem.get_instance() as vmb:
         cams = vmb.get_all_cameras()
-        print(f"Cameras found: {len(cams)}")
+        logger.info(f"Cameras found: {len(cams)}")
 
         for cam in cams:
-            print(f" - ID: {cam.get_id()}, Name: {cam.get_name()}")
+            logger.info(f" - ID: {cam.get_id()}, Name: {cam.get_name()}")
 if __name__ == "__main__":
     test_camera()

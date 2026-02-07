@@ -47,7 +47,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
         return
 
     error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-    print("Uncaught exception:", error_msg)
+    logging.getLogger(__name__).error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
     
     if QApplication.instance():
         msg = QMessageBox()

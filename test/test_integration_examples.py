@@ -131,11 +131,11 @@ class TestFrameProcessingPipeline:
 
     def test_error_handling_pipeline(self):
         """Test error handling across pipeline stages."""
-        pass
+        pytest.skip("Not implemented: error handling pipeline coverage")
     
     def test_driver_connection_failure(self, mock_driver):
         """What happens when camera fails to connect? - Use separate mock."""
-        pass
+        pytest.skip("Not implemented: driver connection failure coverage")
     
     def test_fit_with_all_nan_data(self, mock_fitter):
         """Fitter should handle NaN gracefully."""

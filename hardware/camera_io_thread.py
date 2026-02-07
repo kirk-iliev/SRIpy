@@ -74,8 +74,8 @@ class CameraIoThread(QThread):
         if self._live_running:
             try:
                 self._driver.stop_stream()
-            except Exception:
-                pass
+            except Exception as e:
+                self._logger.warning(f"Failed to stop stream on thread exit: {e}")
 
     def _handle_command(self, command: CameraCommand, args: tuple) -> None:
         # Guard clause: Ignore commands that conflict with a running burst.
@@ -135,8 +135,8 @@ class CameraIoThread(QThread):
             if was_live:
                 try:
                     self._driver.stop_stream()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._logger.warning(f"Failed to stop stream for background capture: {e}")
                 self._live_running = False
                 self.live_state_changed.emit(False)
             try:
@@ -167,8 +167,8 @@ class CameraIoThread(QThread):
             if was_live:
                 try:
                     self._driver.stop_stream()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._logger.warning(f"Failed to stop stream for burst: {e}")
                 self._live_running = False
                 self.live_state_changed.emit(False)
             try:
@@ -281,8 +281,8 @@ class CameraIoThread(QThread):
             # Disconnect the completion signal so we don't trigger double cleanup
             try:
                 self._burst_thread.finished.disconnect()
-            except Exception:
-                pass
+            except Exception as e:
+                self._logger.debug(f"Burst thread disconnect skipped: {e}")
 
             if self._burst_thread.isRunning():
                 self._logger.info("Stopping burst thread...")

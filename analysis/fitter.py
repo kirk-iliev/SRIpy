@@ -87,7 +87,8 @@ class InterferenceFitter:
                       bounds=(bounds_g_min, bounds_g_max), maxfev=1000)
             center_guess = popt_g[2]
             width_guess = popt_g[3]
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Gaussian fit fallback: {e}")
             center_guess = peak_idx
             width_guess = est_width
 
@@ -102,7 +103,8 @@ class InterferenceFitter:
             
             # Update guesses with robust envelope results
             env_base, env_amp, env_w, env_center = popt_env
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Envelope fit fallback: {e}")
             # Fallback to Gaussian results if Sinc fit fails
             env_base, env_amp, env_w, env_center = min_val, peak_val-min_val, est_sinc_w, center_guess
 
@@ -127,7 +129,8 @@ class InterferenceFitter:
             dominant_idx = np.argmax(fft_mag)
             est_freq = xf[dominant_idx]
             est_sine_k = 2 * np.pi * est_freq
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"FFT frequency estimate fallback: {e}")
             est_sine_k = 0.3
 
         # Refine sine params by fitting only the central region
@@ -152,7 +155,8 @@ class InterferenceFitter:
                 sine_k_ref, sine_ph_ref = popt_sine[2], popt_sine[3]
             else:
                 sine_k_ref, sine_ph_ref = est_sine_k, 0.0
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Sine fit refinement fallback: {e}")
             sine_k_ref, sine_ph_ref = est_sine_k, 0.0
 
         # --- Stage 3: Full Visibility Fit ---
@@ -202,7 +206,8 @@ class InterferenceFitter:
                     'sine_k': float(perr[5]),
                     'sine_phase': float(perr[6]),
                 }
-            except Exception:
+            except Exception as e:
+                self.logger.debug(f"Param error estimation failed: {e}")
                 param_errors = None
 
             try:

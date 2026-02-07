@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import unittest
 import os, sys
@@ -8,6 +9,8 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from analysis.fitter import InterferenceFitter
+
+logger = logging.getLogger(__name__)
 
 
 class TestInterferencePhysics(unittest.TestCase):
@@ -45,7 +48,7 @@ class TestInterferencePhysics(unittest.TestCase):
 
     def test_sigma_recovery(self):
         """Can we recover 45um Sigma from a noisy signal?"""
-        print("\n--- Running Physics Recovery Test ---")
+        logger.info("--- Running Physics Recovery Test ---")
         
         # Generate a beam that equals exactly 45.0 microns
         x, y_data, true_vis = self.generate_synthetic_beam(target_sigma_microns=1.6, noise_level=50.0)
@@ -53,9 +56,9 @@ class TestInterferencePhysics(unittest.TestCase):
         # Run the fit
         result = self.fitter.fit(y_data)
         
-        print(f"Target Sigma: 1.60 um")
-        print(f"Fitted Sigma: {result.sigma_microns:.2f} um")
-        print(f"Visibility:   {result.visibility:.4f} (True: {true_vis:.4f})")
+        logger.info(f"Target Sigma: 1.60 um")
+        logger.info(f"Fitted Sigma: {result.sigma_microns:.2f} um")
+        logger.info(f"Visibility:   {result.visibility:.4f} (True: {true_vis:.4f})")
 
         # Assertions
         self.assertTrue(result.success, "Fitter failed to converge on valid data")

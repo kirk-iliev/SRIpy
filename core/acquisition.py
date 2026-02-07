@@ -160,5 +160,7 @@ class BurstWorker(QObject):
 
         except Exception as e:
             self.error.emit(str(e))
-            try: self.driver.stop_stream()
-            except: pass
+            try:
+                self.driver.stop_stream()
+            except Exception as stop_err:
+                self.logger.warning(f"Failed to stop stream after burst error: {stop_err}")

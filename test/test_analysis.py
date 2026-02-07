@@ -1,7 +1,10 @@
+import logging
 from hardware.manta_driver import MantaDriver
 from analysis.fitter import InterferenceFitter
 import matplotlib.pyplot as plt
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 def main():
     # 1. Connect and Snap
@@ -11,7 +14,7 @@ def main():
     driver.exposure = 0.005  # 5ms
     driver.gain = 0
     
-    print("Acquiring image...")
+    logger.info("Acquiring image...")
     img = driver.acquire_frame()
     driver.close()
     
@@ -22,13 +25,13 @@ def main():
     lineout = fitter.get_lineout(img)
     
     # Fit
-    print("Fitting data...")
+    logger.info("Fitting data...")
     res = fitter.fit(lineout)
     
     if res:
-        print(f"FIT SUCCESS!")
-        print(f"Visibility: {res['visibility']:.4f}")
-        print(f"Beam Sigma: {res['sigma']*1e6:.2f} microns")
+        logger.info("FIT SUCCESS!")
+        logger.info(f"Visibility: {res['visibility']:.4f}")
+        logger.info(f"Beam Sigma: {res['sigma']*1e6:.2f} microns")
         
         # 3. Plot Result
         plt.figure(figsize=(10, 6))
@@ -38,7 +41,7 @@ def main():
         plt.title(f"Interference Fit (Vis={res['visibility']:.2f})")
         plt.show()
     else:
-        print("Fit Failed! (Maybe image is too dark or empty?)")
+        logger.warning("Fit Failed! (Maybe image is too dark or empty?)")
         plt.plot(lineout)
         plt.show()
 

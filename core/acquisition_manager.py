@@ -70,6 +70,7 @@ class AcquisitionManager(QObject):
         self.saturation_threshold = 4090
         self._static_image = None
         self._static_mode = False
+        self._live_physics_backup: Optional[Tuple[float, float, float]] = None
 
         # Cached outputs (typed for IDE support)
         self.last_raw_image: Optional[npt.NDArray] = None
@@ -83,6 +84,7 @@ class AcquisitionManager(QObject):
         self._last_fit_request_time = 0.0
         self._fit_request_id = 0
         self._inflight_fit_id: Optional[int] = None
+        self._analysis_timed_out = False
         self._live_running = False
         self._was_live_before_burst = False
         
@@ -217,6 +219,10 @@ class AcquisitionManager(QObject):
             return
         if self.camera_thread is None:
             return
+        if self._static_mode and self._live_physics_backup is not None:
+            wave, slit, dist = self._live_physics_backup
+            self.set_physics_params(wave, slit, dist)
+            self.physics_loaded.emit(wave * 1e9, slit * 1e3, dist)
         self._static_mode = False
         self.camera_thread.enqueue(CameraCommand.START_LIVE)
 
@@ -350,9 +356,10 @@ class AcquisitionManager(QObject):
             if self._analysis_busy and (now - self._last_fit_request_time) <= self._analysis_timeout_s:
                 return
             if self._analysis_busy and (now - self._last_fit_request_time) > self._analysis_timeout_s:
-                self.logger.warning("Analysis timeout; dropping in-flight fit")
-                self._analysis_busy = False
-                self._inflight_fit_id = None
+                if not self._analysis_timed_out:
+                    self.logger.warning("Analysis timeout; waiting for in-flight fit to finish")
+                    self._analysis_timed_out = True
+                return
             if disp_col_stop > disp_col_start:
                 fit_y = lineout[disp_col_start:disp_col_stop]
                 fit_x = np.arange(disp_col_start, disp_col_stop)
@@ -385,6 +392,14 @@ class AcquisitionManager(QObject):
             raise RuntimeError("OpenCV is required to load image files. Please install opencv-python.") from e
         import scipy.io
         import numpy as np
+
+        # Backup live physics params before applying static metadata
+        if not self._static_mode:
+            self._live_physics_backup = (
+                self.fitter.wavelength,
+                self.fitter.slit_sep,
+                self.fitter.distance,
+            )
 
         ext = os.path.splitext(file_path)[1].lower()
         loaded_img = None
@@ -550,6 +565,7 @@ class AcquisitionManager(QObject):
             return
         self._analysis_busy = False
         self._inflight_fit_id = None
+        self._analysis_timed_out = False
         self.last_fit_result = result
         self.last_fit_x = x_axis
         self.fit_result_ready.emit(result, x_axis)

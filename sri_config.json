@@ -20,9 +20,9 @@
         "distance_m": 16.5
     },
     "roi": {
-        "rows_min": 0,
-        "rows_max": 1216,
-        "fit_width_min": 30,
+        "rows_min": 30,
+        "rows_max": 768,
+        "fit_width_min": 114,
         "fit_width_max": 1936,
         "auto_center": false
     }

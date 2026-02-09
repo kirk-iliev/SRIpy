@@ -46,7 +46,7 @@ class InterferometerController(QObject):
         # Physics Params
         self.view.controls.physics_changed.connect(self._sync_physics)
         
-        # ROI Interactions (Live Widget)
+        # ROI Interactions
         self.view.live_widget.roi_changed.connect(self._sync_roi)
         self.view.live_widget.roi_drag_start.connect(self._on_roi_drag_start)
         self.view.live_widget.roi_drag_end.connect(self._on_roi_drag_end)
@@ -140,7 +140,6 @@ class InterferometerController(QObject):
         try:
             self.view.live_widget.set_roi_rows(c['roi']['rows_min'], c['roi']['rows_max'])
             self.view.live_widget.set_roi_width(c['roi']['fit_width_min'], c['roi']['fit_width_max'])
-            # Disable auto-center in UI so it doesn't snap back immediately
             self.view.controls.chk_autocenter.setChecked(False)
         finally:
             self._suppress_roi_sync = False
@@ -222,7 +221,6 @@ class InterferometerController(QObject):
         self.view.controls.chk_bg.setChecked(True)
 
     def _handle_burst(self):
-        # FIX: Reset progress bar to 0 before showing it
         self.view.controls.progress_bar.setValue(0)
         self.view.controls.progress_bar.setVisible(True)
         
@@ -280,7 +278,6 @@ class InterferometerController(QObject):
             self.view.live_widget.update_fit([], [])
 
         # Update Text Numbers (Vis, Sigma)
-        # Note: We handle the status label manually below to prevent overwriting "FILE LOADED"
         self.view.controls.lbl_vis.setText(f"{res.visibility:.3f}")
         self.view.controls.lbl_sigma.setText(f"{res.sigma_microns:.1f} um")
         

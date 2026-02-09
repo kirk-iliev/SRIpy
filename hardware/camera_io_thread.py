@@ -157,7 +157,7 @@ class CameraIoThread(QThread):
             # from previous bursts, so they won't delete our new thread.
             self._burst_id += 1
             
-            # If a burst is technically "running" (e.g. just finishing cleanup),
+            # If a burst is technically "running"
             # this will wait for it to die completely before starting the new one.
             self._wait_for_burst_thread()
             self._cleanup_burst() # Ensure clean slate
@@ -218,11 +218,11 @@ class CameraIoThread(QThread):
         self._burst_worker.error.connect(self._handle_burst_error)
 
         # Thread Lifecycle Management:
-        # 1. When worker finishes, quit the thread loop
+        # When worker finishes, quit the thread loop
         self._burst_worker.finished.connect(self._burst_thread.quit)
         self._burst_worker.error.connect(self._burst_thread.quit)
         
-        # 2. When thread finishes, enqueue a command to clean up safely in THIS thread
+        # When thread finishes, enqueue a command to clean up safely in THIS thread
         # We pass the current burst_id to ensure we don't clean up the wrong thread later
         current_id = self._burst_id
         self._burst_thread.finished.connect(
@@ -249,12 +249,12 @@ class CameraIoThread(QThread):
 
     def _cleanup_burst(self) -> None:
         """Called safely from within the run() loop via BURST_COMPLETED command."""
-        # 1. Restore Live State if needed
+        # Restore Live State if needed
         resume_live = self._resume_live_after_burst
         self._burst_running = False
         self._resume_live_after_burst = False
         
-        # 2. Clean up objects
+        # Clean up objects
         if self._burst_worker is not None:
             self._burst_worker.deleteLater()
             self._burst_worker = None
@@ -266,7 +266,7 @@ class CameraIoThread(QThread):
             self._burst_thread.deleteLater()
             self._burst_thread = None
 
-        # 3. Resume Live
+        # Resume Live
         if resume_live and not self._shutdown:
             try:
                 self._driver.start_stream()

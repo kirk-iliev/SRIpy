@@ -87,7 +87,7 @@ class MantaDriver(CameraInterface):
             return
 
         # Optimize Packet Size
-        for feature_name in ["GevSCPSPacketSize", "PacketSize"]:
+        for feature_name in ["GevSCPSPacketSize", "PacketSize"]: 
             feat = self._get_feature(feature_name)
             if feat:
                 try:

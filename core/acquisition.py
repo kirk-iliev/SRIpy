@@ -87,7 +87,7 @@ class BurstWorker(QObject):
                 else:
                     lineout = self.fitter.get_lineout(img)
                 
-                # Apply X-ROI (width crop)
+                # Apply X-ROI
                 # After transpose swap, use roi_slice for column cropping
                 if self.transpose and self.roi_slice:
                     # Columns are original rows

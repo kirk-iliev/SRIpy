@@ -35,7 +35,7 @@ from analysis.fitter import InterferenceFitter, FitResult
 from analysis.analysis_worker import AnalysisWorker
 
 class AcquisitionManager(QObject):
-    # --- Signals (Pure Data Only) ---
+    # --- Signals ---
     live_data_ready = pyqtSignal(object, object) # Emits (image, lineout)
     fit_result_ready = pyqtSignal(object, object) # Emits (result, x_axis)
     roi_updated = pyqtSignal(float, float, float, float)  # y_min, y_max, x_min, x_max
@@ -254,7 +254,7 @@ class AcquisitionManager(QObject):
     # --- Processing Loop (Optimized) ---
     def _process_live_frame(self, raw_img):
         try:
-            # 1. Fast Math
+            # Convert to float32 and ensure C-contiguous for downstream processing
             img = raw_img.squeeze().astype(np.float32, copy=False)
             img = np.ascontiguousarray(img)
             
@@ -267,6 +267,7 @@ class AcquisitionManager(QObject):
                 img = np.ascontiguousarray(img.T)
 
             self.last_raw_image = img
+            # Check saturation in the original image (before any transpose or processing)
             is_saturated = bool(np.max(img) >= self.saturation_threshold)
             if is_saturated != self.last_saturated:
                 self.last_saturated = is_saturated

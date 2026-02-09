@@ -24,6 +24,8 @@ class InterferenceFitter:
         self.distance = distance
         self.min_signal = min_signal
 
+    # --- Data Preparation ---
+
     def get_lineout(self, image: np.ndarray, roi_slice: Optional[slice] = None) -> np.ndarray:
         if roi_slice:
             data = image[roi_slice, :] if image.ndim == 2 else image
@@ -34,6 +36,7 @@ class InterferenceFitter:
             return np.sum(data, axis=0)
         return data
 
+    # --- Model Definitions ---
     def _gaussian(self, x: np.ndarray, baseline: float, amp: float, center: float, width: float) -> np.ndarray:
         return baseline + amp * np.exp(-((x - center) ** 2) / (2 * width ** 2))
 
@@ -55,6 +58,7 @@ class InterferenceFitter:
         interf = 1 + visibility * np.sin(sine_freq * x + sine_phase)
         return baseline + sinc_sq * interf
 
+    # --- Fitting Logic ---
     def fit(self, lineout: np.ndarray) -> FitResult:
         # Sanitize Input
         y = np.nan_to_num(np.asarray(lineout, dtype=float))

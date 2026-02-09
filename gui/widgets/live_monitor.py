@@ -40,7 +40,7 @@ class LiveMonitorWidget(QWidget):
                 lut = cmap(np.linspace(0, 1, 256))[:, :3] * 255
                 self.image_item.setLookupTable(np.array(lut, dtype=np.uint8))
 
-        # ROI: Vertical Binning Region (Rows)
+        # ROI: Vertical Binning Region
         self.roi_rows = pg.LinearRegionItem(orientation='horizontal', brush=(0, 50, 255, 50))  # type: ignore
         self.roi_rows.setRegion([400, 800])
         # Bounds will be set dynamically in update_image

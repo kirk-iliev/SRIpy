@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QGridLayout, 
-                             QLabel, QDoubleSpinBox, QCheckBox, QPushButton, QProgressBar)
+                             QLabel, QDoubleSpinBox, QCheckBox, QPushButton, QProgressBar, QHBoxLayout, QSpinBox)
 from PyQt6.QtCore import pyqtSignal
 
 class ControlPanelWidget(QWidget):
@@ -107,10 +107,20 @@ class ControlPanelWidget(QWidget):
         self.btn_live.toggled.connect(self.toggle_live_clicked.emit)
         layout.addWidget(self.btn_live)
 
+        burst_layout = QHBoxLayout()
+        self.spin_burst_count = QSpinBox()
+        self.spin_burst_count.setRange(1, 1000)
+        self.spin_burst_count.setValue(50)
+        self.spin_burst_count.setSuffix(" frames")
+        self.spin_burst_count.setToolTip("Number of frames to acquire in burst mode")
+        burst_layout.addWidget(self.spin_burst_count, stretch=1)
+
         self.btn_burst = QPushButton("Burst Acquire")
         self.btn_burst.setStyleSheet("background-color: #d95f02; color: white; font-weight: bold; height: 40px;")
         self.btn_burst.clicked.connect(lambda: self.burst_clicked.emit())
-        layout.addWidget(self.btn_burst)
+        burst_layout.addWidget(self.btn_burst, stretch=3)
+        self.spin_burst_count.valueChanged.connect(lambda val: self.set_burst_frame_count(val))
+        layout.addLayout(burst_layout)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)

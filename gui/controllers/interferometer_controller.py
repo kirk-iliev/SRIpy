@@ -165,6 +165,8 @@ class InterferometerController(QObject):
 
         self.view.controls.chk_autocenter.setChecked(c['roi']['auto_center'])
 
+        self.view.controls.spin_burst_count.setValue(c['burst']['default_frames'])
+
         self.view.controls.chk_bg.setChecked(False)
         self.view.controls.chk_bg.setEnabled(False)
 
@@ -228,15 +230,19 @@ class InterferometerController(QObject):
         self.view.controls.btn_burst.setEnabled(False)
         self.view.controls.btn_live.setEnabled(False)
         self.view.controls.btn_bg.setEnabled(False) # Disable background button too
+        self.view.controls.spin_burst_count.setEnabled(False)
 
-        self.model.start_burst(self.model._default_burst_frames)
+        n_frames = self.view.controls.spin_burst_count.value()
+        self.model._default_burst_frames = n_frames  # Update model's default for next
+
+        self.model.start_burst(n_frames)
 
     def _handle_burst_finished(self, res):
         self.view.controls.progress_bar.setVisible(False)
         self.view.controls.btn_burst.setEnabled(True)
         self.view.controls.btn_live.setEnabled(True)
         self.view.controls.btn_bg.setEnabled(True) # Re-enable background button
-
+        self.view.controls.spin_burst_count.setEnabled(True)
         if self.model.is_live_running():
             self.view.controls.btn_live.setChecked(True)
             self.view.controls.btn_live.setText("Stop Live")
@@ -254,7 +260,7 @@ class InterferometerController(QObject):
         self.view.controls.btn_burst.setEnabled(True)
         self.view.controls.btn_live.setEnabled(True)
         self.view.controls.btn_bg.setEnabled(True)
-
+        self.view.controls.spin_burst_count.setEnabled(True)
         if self.model.is_live_running():
             self.view.controls.btn_live.setChecked(True)
             self.view.controls.btn_live.setText("Stop Live")
@@ -463,7 +469,9 @@ class InterferometerController(QObject):
         ui_config["analysis"]["min_signal_threshold"] = self.model.fitter.min_signal
         ui_config["analysis"]["autocenter_min_signal"] = self.model._autocenter_min_signal
         ui_config["analysis"]["analysis_timeout_s"] = self.model._analysis_timeout_s
-        ui_config["burst"]["default_frames"] = self.model._default_burst_frames
+        ui_config["burst"] = {
+            "default_frames": self.model._default_burst_frames
+        }
 
         self.model.config_manager.save(ui_config)
 

@@ -13,9 +13,9 @@ class InterferometerController(QObject):
         self.model = AcquisitionManager()
         self._suppress_roi_sync = False
         self._user_is_dragging = False  # Track user interaction state
-        
+
         self._connect_signals()
-        
+
         # Initial Hardware Setup
         try:
             self.model.initialize()
@@ -25,7 +25,7 @@ class InterferometerController(QObject):
         # Apply config to UI, then push to model
         self._apply_config_to_view()
         self._sync_all_params()
-        
+
         # Update burst button label with configured frame count
         self.view.controls.set_burst_frame_count(self.model._default_burst_frames)
 
@@ -35,28 +35,28 @@ class InterferometerController(QObject):
         self.view.controls.toggle_live_clicked.connect(self._handle_live_toggle)
         self.view.controls.acquire_bg_clicked.connect(self._handle_bg_acquire)
         self.view.controls.burst_clicked.connect(self._handle_burst)
-        
+
         # Value Changes
         self.view.controls.exposure_changed.connect(self.model.set_exposure)
         self.view.controls.gain_changed.connect(self.model.set_gain)
         self.view.controls.chk_transpose.toggled.connect(self._handle_transpose_toggled)
         self.view.controls.chk_bg.toggled.connect(self.model.toggle_background)
         self.view.controls.chk_autocenter.toggled.connect(self.model.set_autocenter)
-        
+
         # Physics Params
         self.view.controls.physics_changed.connect(self._sync_physics)
-        
+
         # ROI Interactions
         self.view.live_widget.roi_changed.connect(self._sync_roi)
         self.view.live_widget.roi_drag_start.connect(self._on_roi_drag_start)
         self.view.live_widget.roi_drag_end.connect(self._on_roi_drag_end)
-        
+
         self.view.controls.reset_roi_clicked.connect(self._reset_roi)
 
         # Saving
         self.view.controls.save_data_clicked.connect(self._save_dataset)
         self.view.controls.save_mat_clicked.connect(self._save_matlab)
-        
+
         # App Lifecycle
         self.view.close_requested.connect(self.cleanup)
 
@@ -69,12 +69,12 @@ class InterferometerController(QObject):
         self.model.saturation_updated.connect(self._update_saturation)
         self.model.background_ready.connect(self._handle_background_ready)
         self.model.live_state_changed.connect(self._handle_live_state)
-        
+
         # Burst Status
         self.model.burst_progress.connect(self.view.controls.progress_bar.setValue)
         self.model.burst_finished.connect(self._handle_burst_finished)
         self.model.burst_error.connect(self._handle_burst_error)
-        
+
         # Load file
         self.view.controls.load_file_clicked.connect(self._handle_load_file)
         self.model.physics_loaded.connect(self._on_physics_loaded)
@@ -84,23 +84,23 @@ class InterferometerController(QObject):
     def _on_physics_loaded(self, wave_nm, slit_mm, dist_m):
         """Updates UI spinners without triggering feedback loops."""
         controls = self.view.controls
-        
-        # Block signals so updating the UI doesn't accidentally trigger 
+
+        # Block signals so updating the UI doesn't accidentally trigger
         # a "value changed" event that sends data back to the model.
         controls.spin_lambda.blockSignals(True)
         controls.spin_slit.blockSignals(True)
         controls.spin_dist.blockSignals(True)
-        
+
         # Update the values
         controls.spin_lambda.setValue(float(wave_nm))
         controls.spin_slit.setValue(float(slit_mm))
         controls.spin_dist.setValue(float(dist_m))
-        
+
         # Unblock signals
         controls.spin_lambda.blockSignals(False)
         controls.spin_slit.blockSignals(False)
         controls.spin_dist.blockSignals(False)
-        
+
         # Flash the values or log to status bar to show user it happened
         self.view.controls.lbl_sat.setText("PARAMS LOADED")
         self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
@@ -143,7 +143,7 @@ class InterferometerController(QObject):
             self.view.controls.chk_autocenter.setChecked(False)
         finally:
             self._suppress_roi_sync = False
-        
+
         self.model.set_autocenter(False)
         self._sync_roi()
 
@@ -223,20 +223,20 @@ class InterferometerController(QObject):
     def _handle_burst(self):
         self.view.controls.progress_bar.setValue(0)
         self.view.controls.progress_bar.setVisible(True)
-        
+
         # Disable ALL acquisition triggers
         self.view.controls.btn_burst.setEnabled(False)
         self.view.controls.btn_live.setEnabled(False)
         self.view.controls.btn_bg.setEnabled(False) # Disable background button too
-        
-        self.model.start_burst(self.model._default_burst_frames) 
+
+        self.model.start_burst(self.model._default_burst_frames)
 
     def _handle_burst_finished(self, res):
         self.view.controls.progress_bar.setVisible(False)
         self.view.controls.btn_burst.setEnabled(True)
         self.view.controls.btn_live.setEnabled(True)
         self.view.controls.btn_bg.setEnabled(True) # Re-enable background button
-        
+
         if self.model.is_live_running():
             self.view.controls.btn_live.setChecked(True)
             self.view.controls.btn_live.setText("Stop Live")
@@ -245,7 +245,7 @@ class InterferometerController(QObject):
             self.view.controls.btn_live.setChecked(False)
             self.view.controls.btn_live.setText("Start Live")
             self.view.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
-        
+
         self.view.history_widget.add_point(res.mean_sigma)
         QMessageBox.information(self.view, "Burst Done", f"Mean Sigma: {res.mean_sigma:.2f} um")
 
@@ -254,7 +254,7 @@ class InterferometerController(QObject):
         self.view.controls.btn_burst.setEnabled(True)
         self.view.controls.btn_live.setEnabled(True)
         self.view.controls.btn_bg.setEnabled(True)
-        
+
         if self.model.is_live_running():
             self.view.controls.btn_live.setChecked(True)
             self.view.controls.btn_live.setText("Stop Live")
@@ -269,7 +269,7 @@ class InterferometerController(QObject):
         self.view.live_widget.update_image(img)
         self.view.live_widget.update_lineout(np.arange(len(lineout)), lineout)
         self._update_saturation(self.model.last_saturated)
-        
+
     def _update_stats(self, res, x_data):
         # Update Graphs
         if res.success:
@@ -280,20 +280,20 @@ class InterferometerController(QObject):
         # Update Text Numbers (Vis, Sigma)
         self.view.controls.lbl_vis.setText(f"{res.visibility:.3f}")
         self.view.controls.lbl_sigma.setText(f"{res.sigma_microns:.1f} um")
-        
+
         # Update Status Label (The Fix)
         is_saturated = self.model.last_saturated
-        
+
         # Saturation Warning (Always show this if bad)
         if is_saturated:
             self.view.controls.lbl_sat.setText("SATURATED!")
             self.view.controls.lbl_sat.setStyleSheet("color: red; font-weight: bold; background-color: yellow;")
-        
+
         # Static File Loaded (If viewing a loaded file)
         elif self.model.is_static_mode():
             self.view.controls.lbl_sat.setText("FILE LOADED")
             self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
-            
+
         # Normal Live Status
         else:
             self.view.controls.lbl_sat.setText("OK")
@@ -320,7 +320,7 @@ class InterferometerController(QObject):
         self.view.controls.lbl_sat.setText("ERROR")
         self.view.controls.lbl_sat.setStyleSheet(
             "color: white; font-weight: bold; background-color: red;"
-        ) 
+        )
 
     def _handle_transpose_toggled(self, checked: bool):
         self.model.set_transpose(checked)
@@ -356,7 +356,7 @@ class InterferometerController(QObject):
             slit_separation_mm=self.view.controls.spin_slit.value(),
             distance_m=self.view.controls.spin_dist.value(),
         )
-        
+
         if self.model.last_raw_image is None or self.model.last_fit_result is None:
             QMessageBox.warning(self.view, "Save Error", "No data available to save.")
             return
@@ -364,8 +364,8 @@ class InterferometerController(QObject):
         res = ExperimentResult(
             visibility=self.model.last_fit_result.visibility,
             sigma_microns=self.model.last_fit_result.sigma_microns,
-            lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else self.model.last_lineout,
-            fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else self.model.last_fit_result.fitted_curve,
+            lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else (self.model.last_lineout if self.model.last_lineout is not None else []),
+            fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else (self.model.last_fit_result.fitted_curve if isinstance(self.model.last_fit_result.fitted_curve, list) else []),
             is_saturated=self.model.last_saturated
         )
 
@@ -390,8 +390,8 @@ class InterferometerController(QObject):
         res = ExperimentResult(
             visibility=self.model.last_fit_result.visibility,
             sigma_microns=self.model.last_fit_result.sigma_microns,
-            lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else self.model.last_lineout,
-            fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else self.model.last_fit_result.fitted_curve,
+            lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else (self.model.last_lineout if self.model.last_lineout is not None else []),
+            fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else (self.model.last_fit_result.fitted_curve if isinstance(self.model.last_fit_result.fitted_curve, list) else []),
             is_saturated=self.model.last_saturated
         )
 
@@ -414,7 +414,7 @@ class InterferometerController(QObject):
         # Support generic images AND .mat files
         file_filter = "All Supported (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.mat);;Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;Matlab Data (*.mat)"
         path, _ = QFileDialog.getOpenFileName(self.view, "Load Beam Image", "", file_filter)
-        
+
         if not path:
             return
 

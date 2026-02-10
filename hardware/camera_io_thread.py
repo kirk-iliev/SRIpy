@@ -42,7 +42,7 @@ class CameraIoThread(QThread):
         self._burst_thread: Optional[QThread] = None
         self._burst_worker: Optional[BurstWorker] = None
         self._burst_id = 0  # Track burst generations to prevent signal crossover
-        
+
         # Burst frame queue: CameraIoThread fills this, BurstWorker consumes
         self._burst_frame_queue: queue.Queue = queue.Queue(maxsize=100)
 
@@ -155,10 +155,10 @@ class CameraIoThread(QThread):
                 except Exception as e:
                     self.error.emit(str(e))
         elif command == CameraCommand.START_BURST:
-            # Increment ID immediately. This invalidates any pending BURST_COMPLETED signals 
+            # Increment ID immediately. This invalidates any pending BURST_COMPLETED signals
             # from previous bursts, so they won't delete our new thread.
             self._burst_id += 1
-            
+
             # If a burst is technically "running"
             # this will wait for it to die completely before starting the new one.
             self._wait_for_burst_thread()
@@ -230,7 +230,7 @@ class CameraIoThread(QThread):
         # When worker finishes, quit the thread loop
         self._burst_worker.finished.connect(self._burst_thread.quit)
         self._burst_worker.error.connect(self._burst_thread.quit)
-        
+
         # When thread finishes, enqueue a command to clean up safely in THIS thread
         # We pass the current burst_id to ensure we don't clean up the wrong thread later
         current_id = self._burst_id
@@ -262,7 +262,7 @@ class CameraIoThread(QThread):
         resume_live = self._resume_live_after_burst
         self._burst_running = False
         self._resume_live_after_burst = False
-        
+
         # Clean up objects
         if self._burst_worker is not None:
             self._burst_worker.deleteLater()
@@ -299,6 +299,6 @@ class CameraIoThread(QThread):
                 finished = self._burst_thread.wait(timeout_ms)
                 if not finished:
                     self._logger.warning("Burst thread did not finish cleanly.")
-            
+
             # Final cleanup
             self._cleanup_burst()

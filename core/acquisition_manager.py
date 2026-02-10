@@ -42,25 +42,25 @@ class AcquisitionManager(QObject):
     saturation_updated = pyqtSignal(bool)
     background_ready = pyqtSignal(object)
     live_state_changed = pyqtSignal(bool)
-    
+
     burst_progress = pyqtSignal(int)
     burst_finished = pyqtSignal(object)
     burst_error = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
     physics_loaded = pyqtSignal(float, float, float) # wavelength, slit, distance
-    
+
     # Internal wiring
     _request_fit = pyqtSignal(object, object, int)
 
     def __init__(self):
         super().__init__()
         self.logger = logging.getLogger(__name__)
-        
+
         # --- Internal State (Faster than reading UI) ---
         self.config_manager = ConfigManager()
         self.cfg = self.config_manager.load()
-        
+
         self.roi_slice: slice = slice(400, 800)
         self.roi_x_limits: Tuple[int, int] = (800, 1200)
         self.autocenter_enabled = True
@@ -87,23 +87,23 @@ class AcquisitionManager(QObject):
         self._analysis_timed_out = False
         self._live_running = False
         self._was_live_before_burst = False
-        
+
         # Hardware & Logic
         self.driver = MantaDriver()
         self.fitter = InterferenceFitter()
         self.fitter_burst = InterferenceFitter()
         self._fitter_lock = threading.Lock()
-        
+
         # Threads (deferred to initialize() to avoid orphan threads on connection failure)
         self.camera_thread: Optional[CameraIoThread] = None
         self.an_thread: Optional[QThread] = None
         self.an_worker: Optional[AnalysisWorker] = None
-        
+
         # Config-driven thresholds (defaults until apply_config runs)
         self._autocenter_min_signal: float = 200.0
         self._analysis_timeout_s: float = 3.0
         self._default_burst_frames: int = 50
-        
+
         self.apply_config()
 
     def initialize(self):
@@ -142,14 +142,14 @@ class AcquisitionManager(QObject):
         self.autocenter_enabled = bool(c['roi']['auto_center'])
         self.transpose_enabled = bool(c['camera']['transpose'])
         self.saturation_threshold = int(c['camera'].get('saturation_threshold', 4090))
-        
+
         # Analysis thresholds from config
         analysis_cfg = c.get('analysis', {})
         min_sig = analysis_cfg.get('min_signal_threshold', 50.0)
         self._autocenter_min_signal = float(analysis_cfg.get('autocenter_min_signal', 200.0))
         self._analysis_timeout_s = float(analysis_cfg.get('analysis_timeout_s', 3.0))
         self._default_burst_frames = int(c.get('burst', {}).get('default_frames', 50))
-        
+
         with self._fitter_lock:
             self.fitter.min_signal = min_sig
             self.fitter_burst.min_signal = min_sig
@@ -182,7 +182,7 @@ class AcquisitionManager(QObject):
             self.fitter.wavelength = wavelength
             self.fitter.slit_sep = slit
             self.fitter.distance = distance
-            
+
             # Sync burst fitter too so high-speed capture uses same math
             self.fitter_burst.wavelength = wavelength
             self.fitter_burst.slit_sep = slit
@@ -257,7 +257,7 @@ class AcquisitionManager(QObject):
             # Convert to float32 and ensure C-contiguous for downstream processing
             img = raw_img.squeeze().astype(np.float32, copy=False)
             img = np.ascontiguousarray(img)
-            
+
             if self.subtract_background and self.background_frame is not None:
                 if img.shape == self.background_frame.shape:
                     img -= self.background_frame
@@ -318,7 +318,7 @@ class AcquisitionManager(QObject):
 
             # Auto-Center
             if self.autocenter_enabled:
-                # Handle potential NaN/Inf in lineout 
+                # Handle potential NaN/Inf in lineout
                 if np.all(np.isfinite(lineout)):
                     peak_idx = np.argmax(lineout)
                     if lineout[peak_idx] > self._autocenter_min_signal:
@@ -351,7 +351,7 @@ class AcquisitionManager(QObject):
             # Emit Data
             self.last_lineout = lineout
             self.live_data_ready.emit(img, lineout)
-            
+
             # Analysis
             now = time.time()
             if self._analysis_busy and (now - self._last_fit_request_time) <= self._analysis_timeout_s:
@@ -409,21 +409,21 @@ class AcquisitionManager(QObject):
             try:
                 # Load the MATLAB file
                 mat = scipy.io.loadmat(file_path)
-                
+
                 # --- PART A: Image Extraction ---
                 candidate_keys = ['raw', 'IMG', 'img', 'image', 'data']
-                
+
                 def is_valid_image(arr):
                     return isinstance(arr, np.ndarray) and arr.ndim == 2 and arr.size > 1000 and np.issubdtype(arr.dtype, np.number)
 
                 for key, val in mat.items():
                     if key.startswith('__'): continue
-                    
+
                     # Direct check
                     if key in candidate_keys and is_valid_image(val):
                         loaded_img = val
                         break
-                    
+
                     # Nested check (handle different shapes safely)
                     if isinstance(val, np.ndarray) and val.dtype.names:
                         for sub_key in val.dtype.names:
@@ -435,7 +435,7 @@ class AcquisitionManager(QObject):
                                         sub_val = sub_val[0, 0]
                                     elif sub_val.shape == (1,):
                                         sub_val = sub_val[0]
-                                    
+
                                     if is_valid_image(sub_val):
                                         loaded_img = sub_val
                                         break
@@ -448,7 +448,7 @@ class AcquisitionManager(QObject):
                 self.logger.info(
                     f"Searching metadata inside {os.path.basename(file_path)}..."
                 )
-                
+
                 targets = {
                     'slit': ['Slit_Separation', 'slit_sep', 'Separation', 'd', 'D', 'slit'],
                     'dist': ['L', 'distance', 'Distance', 'z', 'dist'],
@@ -459,7 +459,7 @@ class AcquisitionManager(QObject):
                 def hunt_for_keys(data_dict):
                     for key, val in data_dict.items():
                         if key.startswith('__'): continue
-                        
+
                         # 1. Check if this key is a target
                         for param_name, aliases in targets.items():
                             if param_name not in found_params and key in aliases:
@@ -468,7 +468,7 @@ class AcquisitionManager(QObject):
                                     scalar = val
                                     while isinstance(scalar, np.ndarray) and scalar.size == 1:
                                         scalar = scalar.flat[0]
-                                    
+
                                     found_params[param_name] = float(scalar)
                                     self.logger.info(
                                         f"Found {param_name}: '{key}' = {scalar}"
@@ -477,7 +477,7 @@ class AcquisitionManager(QObject):
                                     self.logger.debug(
                                         f"Failed to parse metadata key {key}: {e}"
                                     )
-                        
+
                         if isinstance(val, np.ndarray) and val.dtype.names:
                             # Handle both (1,1) and (1,) shapes
                             if val.size == 1:
@@ -492,34 +492,34 @@ class AcquisitionManager(QObject):
                     curr_wave_nm = self.fitter.wavelength * 1e9
                     curr_slit_mm = self.fitter.slit_sep * 1e3
                     curr_dist_m = self.fitter.distance
-                    
+
                     raw_wave = found_params.get('wave', curr_wave_nm)
                     raw_slit = found_params.get('slit', curr_slit_mm)
-                    raw_dist = found_params.get('dist', curr_dist_m)               
-                    
+                    raw_dist = found_params.get('dist', curr_dist_m)
+
                     # Wavelength: If < 1.0, it's likely Meters. Convert to nm.
-                    if raw_wave < 1.0: 
+                    if raw_wave < 1.0:
                         new_wave_nm = raw_wave * 1e9
                     else:
                         new_wave_nm = raw_wave
-                        
+
                     # Slit: If < 0.1, it's likely Meters. Convert to mm.
                     # (Standard slits are 10mm - 50mm. 0.05m = 50mm)
-                    if raw_slit < 0.1: 
+                    if raw_slit < 0.1:
                         new_slit_mm = raw_slit * 1e3
                     else:
                         new_slit_mm = raw_slit
-                        
+
                     # Distance: Usually meters, but sanity check.
                     new_dist_m = raw_dist
 
                     # Update Physics (Convert Display -> SI for engine)
                     self.set_physics_params(new_wave_nm * 1e-9, new_slit_mm * 1e-3, new_dist_m)
-                    
+
                     # Update UI (Send Display Units)
                     if hasattr(self, 'physics_loaded'):
                         self.physics_loaded.emit(new_wave_nm, new_slit_mm, new_dist_m)
-                        
+
                     self.logger.info(
                         f"Physics Loaded: λ={new_wave_nm:.1f}nm, d={new_slit_mm:.2f}mm, L={new_dist_m:.2f}m"
                     )
@@ -540,18 +540,21 @@ class AcquisitionManager(QObject):
         loaded_img = loaded_img.astype(np.float32)
         self._static_image = loaded_img.copy()
         self._static_mode = True
-        
+
         self._process_live_frame(loaded_img)
 
     def shutdown(self):
         self.stop_live()
         if self.an_thread:
             self.an_thread.quit()
-            self.an_thread.wait(2000)
-        if self.camera_thread is not None:
+            if not self.an_thread.wait(2000):
+                self.logger.warning("Analysis thread did not shut down cleanly.")
+        if self.camera_thread:
             self.camera_thread.enqueue(CameraCommand.SHUTDOWN)
-            self.camera_thread.wait(2000)
-        if self.driver: self.driver.close()
+            if not self.camera_thread.wait(2000):
+                self.logger.warning("Camera thread did not shut down cleanly.")
+        if self.driver:
+            self.driver.close()
 
     def _handle_background_frame(self, frame):
         if frame is None:

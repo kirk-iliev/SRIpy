@@ -17,7 +17,7 @@ class InterferometerView(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SRIpy Interferometer Monitor")
+        self.setWindowTitle("SRIpy")
         self.resize(1300, 950)
         self._setup_ui()
 
@@ -37,5 +37,5 @@ class InterferometerView(QMainWindow):
         layout.addWidget(self.tabs, stretch=4)
         layout.addWidget(self.controls, stretch=1)
 
-    def closeEvent(self, event):
-        self.close_requested.emit(event)
+    def closeEvent(self, a0):
+        self.close_requested.emit(a0)

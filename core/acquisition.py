@@ -9,11 +9,11 @@ class BurstWorker(QObject):
     """
     Handles high-speed burst processing.
     Receives frames from a queue (CameraIoThread is sole driver owner).
-    Uses a two-phase 'Acquire-First, Fit-Later' strategy to decouple 
+    Uses a two-phase 'Acquire-First, Fit-Later' strategy to decouple
     camera timing from CPU-intensive analysis.
     """
     progress = pyqtSignal(int)
-    finished = pyqtSignal(object) 
+    finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
     def __init__(self, frame_queue: queue.Queue, fitter, n_frames, roi_slice, roi_x_map, transpose=False, background=None):
@@ -32,9 +32,9 @@ class BurstWorker(QObject):
             # Phase 1: Collect all frames from the queue (CameraIoThread pushes them)
             raw_lineouts = []
             timestamps = []
-            
+
             self.logger.info(f"Burst: Waiting for {self.n_frames} frames from camera thread")
-            
+
             captured_count = 0
             for i in range(self.n_frames):
                 # Timeout is generous as we wait for camera thread to deliver frames
@@ -44,16 +44,15 @@ class BurstWorker(QObject):
                     self.logger.warning(f"Frame {i} timeout waiting for camera thread")
                     self.error.emit(f"Frame acquisition timeout at frame {i}")
                     break
-                
-                if img is None: 
+
+                if img is None:
                     self.logger.warning(f"Frame {i} dropped (sentinel)")
                     continue
 
                 ts = time.time()
-                
-                # Minimal pre-processing (fast matrix ops only)
-                img = img.squeeze().astype(np.float32, copy=False)
-                # Ensure contiguous memory for in-place operations
+
+                # Ensure image is float32 and contiguous for processing
+                img = np.array(img.squeeze(), dtype=np.float32, copy=True)
                 img = np.ascontiguousarray(img)
 
                 if self.background is not None and img.shape == self.background.shape:
@@ -81,7 +80,7 @@ class BurstWorker(QObject):
                     lineout = self.fitter.get_lineout(img, self.roi_slice)
                 else:
                     lineout = self.fitter.get_lineout(img)
-                
+
                 # Apply X-ROI
                 # After transpose swap, use roi_slice for column cropping
                 if self.transpose and self.roi_slice:
@@ -92,7 +91,7 @@ class BurstWorker(QObject):
                     x_min, x_max = self.roi_x_map
                 else:
                     x_min, x_max = 0, len(lineout)
-                
+
                 x_min = max(0, int(x_min))
                 x_max = min(len(lineout), int(x_max))
                 y_fit_data = lineout[x_min:x_max] if x_max > x_min else lineout
@@ -111,7 +110,7 @@ class BurstWorker(QObject):
             vis_list = []
             sigma_list = []
             total_captured = len(raw_lineouts)
-            
+
             if total_captured == 0:
                 # No frames captured; emit complete progress and finish
                 self.progress.emit(100)
@@ -119,7 +118,7 @@ class BurstWorker(QObject):
                 processed_count = 0
                 for i, y_data in enumerate(raw_lineouts):
                     res = self.fitter.fit(y_data)
-                    
+
                     if res.success:
                         vis_list.append(res.visibility)
                         sigma_list.append(res.sigma_microns)

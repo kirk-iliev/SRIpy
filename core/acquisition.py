@@ -1,12 +1,14 @@
 import time
 import logging
+import queue
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 from core.data_model import BurstResult
 
 class BurstWorker(QObject):
     """
-    Handles high-speed burst acquisition.
+    Handles high-speed burst processing.
+    Receives frames from a queue (CameraIoThread is sole driver owner).
     Uses a two-phase 'Acquire-First, Fit-Later' strategy to decouple 
     camera timing from CPU-intensive analysis.
     """
@@ -14,9 +16,9 @@ class BurstWorker(QObject):
     finished = pyqtSignal(object) 
     error = pyqtSignal(str)
 
-    def __init__(self, driver, fitter, n_frames, roi_slice, roi_x_map, transpose=False, background=None):
+    def __init__(self, frame_queue: queue.Queue, fitter, n_frames, roi_slice, roi_x_map, transpose=False, background=None):
         super().__init__()
-        self.driver = driver
+        self.frame_queue = frame_queue  # Receives frames from CameraIoThread
         self.fitter = fitter
         self.n_frames = n_frames
         self.roi_slice = roi_slice
@@ -27,31 +29,24 @@ class BurstWorker(QObject):
 
     def run_burst(self):
         try:
-            # Capture all raw data first to ensure consistent frame intervals.
+            # Phase 1: Collect all frames from the queue (CameraIoThread pushes them)
             raw_lineouts = []
             timestamps = []
             
-            # Reset stream to clear old buffers and ensure clean state
-            try:
-                self.driver.stop_stream()
-                time.sleep(0.2)  # Give stream time to fully shut down
-                self.driver.start_stream()
-                time.sleep(0.1)  # Give stream time to start
-            except Exception as e:
-                self.logger.warning(f"Burst stream init warning: {e}")
-
+            self.logger.info(f"Burst: Waiting for {self.n_frames} frames from camera thread")
+            
             captured_count = 0
             for i in range(self.n_frames):
-                # Timeout is generous as we are not CPU constrained here
+                # Timeout is generous as we wait for camera thread to deliver frames
                 try:
-                    img = self.driver.acquire_frame(timeout=1.0)
-                except Exception as e:
-                    self.logger.error(f"Failed to acquire frame {i}: {e}", exc_info=True)
-                    self.error.emit(f"Frame acquisition failed at frame {i}: {str(e)}")
+                    img = self.frame_queue.get(block=True, timeout=2.0)
+                except queue.Empty:
+                    self.logger.warning(f"Frame {i} timeout waiting for camera thread")
+                    self.error.emit(f"Frame acquisition timeout at frame {i}")
                     break
                 
                 if img is None: 
-                    self.logger.warning(f"Frame {i} dropped (timeout)")
+                    self.logger.warning(f"Frame {i} dropped (sentinel)")
                     continue
 
                 ts = time.time()
@@ -112,10 +107,7 @@ class BurstWorker(QObject):
                 pct = max(0, min(50, pct))
                 self.progress.emit(pct)
 
-            # Stop stream immediately to release hardware resources
-            self.driver.stop_stream()
-            
-            # Process stored data without real-time constraints
+            # Phase 2: Process stored data without real-time constraints
             vis_list = []
             sigma_list = []
             total_captured = len(raw_lineouts)
@@ -159,8 +151,5 @@ class BurstWorker(QObject):
             self.finished.emit(burst_res)
 
         except Exception as e:
+            self.logger.error(f"Burst error: {e}", exc_info=True)
             self.error.emit(str(e))
-            try:
-                self.driver.stop_stream()
-            except Exception as stop_err:
-                self.logger.warning(f"Failed to stop stream after burst error: {stop_err}")

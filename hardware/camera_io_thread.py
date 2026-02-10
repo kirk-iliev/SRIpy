@@ -1,5 +1,6 @@
 import logging
 import queue
+import threading
 from enum import Enum, auto
 from typing import Optional, Tuple
 
@@ -41,6 +42,9 @@ class CameraIoThread(QThread):
         self._burst_thread: Optional[QThread] = None
         self._burst_worker: Optional[BurstWorker] = None
         self._burst_id = 0  # Track burst generations to prevent signal crossover
+        
+        # Burst frame queue: CameraIoThread fills this, BurstWorker consumes
+        self._burst_frame_queue: queue.Queue = queue.Queue(maxsize=100)
 
     def enqueue(self, command: CameraCommand, *args) -> None:
         self._cmd_queue.put((command, args))
@@ -53,11 +57,18 @@ class CameraIoThread(QThread):
             except queue.Empty:
                 pass
 
-            if self._live_running:
+            if self._live_running or self._burst_running:
                 try:
                     frame = self._driver.acquire_frame(timeout=0.1)
                     if frame is not None:
-                        self.frame_ready.emit(frame)
+                        # Route frame to live display or burst queue
+                        if self._burst_running:
+                            try:
+                                self._burst_frame_queue.put_nowait(frame)
+                            except queue.Full:
+                                self._logger.debug("Burst frame queue full; dropping frame")
+                        if self._live_running:
+                            self.frame_ready.emit(frame)
                     else:
                         self.msleep(1)
                 except Exception as e:
@@ -80,18 +91,9 @@ class CameraIoThread(QThread):
     def _handle_command(self, command: CameraCommand, args: tuple) -> None:
         # Guard clause: Ignore commands that conflict with a running burst.
         # EXCEPTION: We allow START_BURST to pass through so we can handle "restart" logic gracefully.
-        if self._burst_running and command not in (CameraCommand.SHUTDOWN, CameraCommand.BURST_COMPLETED, CameraCommand.START_BURST):
-            if command == CameraCommand.START_LIVE:
-                self._resume_live_after_burst = True
-                return
-            if command == CameraCommand.STOP_LIVE:
-                self._resume_live_after_burst = False
-                return
-            if command in (CameraCommand.SET_EXPOSURE, CameraCommand.SET_GAIN):
-                # Allow parameter changes during burst
-                pass
-            elif command in (CameraCommand.CAPTURE_BACKGROUND,):
-                self.error.emit("Command ignored: burst in progress")
+        if self._burst_running:
+            if command not in (CameraCommand.SHUTDOWN, CameraCommand.BURST_COMPLETED, CameraCommand.START_BURST):
+                self._logger.debug(f"Ignoring command {command} during active burst.")
                 return
 
         if command == CameraCommand.BURST_COMPLETED:
@@ -200,9 +202,16 @@ class CameraIoThread(QThread):
         self._burst_running = True
         self._resume_live_after_burst = was_live
 
+        # Clear burst frame queue before starting
+        try:
+            while True:
+                self._burst_frame_queue.get_nowait()
+        except queue.Empty:
+            pass
+
         self._burst_thread = QThread()
         self._burst_worker = BurstWorker(
-            self._driver,
+            self._burst_frame_queue,  # Pass frame queue instead of driver
             self._fitter_burst,
             n_frames,
             roi_slice,

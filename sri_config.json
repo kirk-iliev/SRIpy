@@ -1,7 +1,7 @@
 {
     "camera": {
         "exposure_ms": 6.5,
-        "gain_db": 9.0,
+        "gain_db": 5.0,
         "transpose": false,
         "subtract_background": false,
         "saturation_threshold": 4090
@@ -20,8 +20,8 @@
         "distance_m": 16.5
     },
     "roi": {
-        "rows_min": 30,
-        "rows_max": 768,
+        "rows_min": 143.74049244044954,
+        "rows_max": 881.7404924404495,
         "fit_width_min": 114,
         "fit_width_max": 1936,
         "auto_center": false

@@ -28,6 +28,10 @@ class ControlPanelWidget(QWidget):
         self.lbl_sigma.setStyleSheet("font-size: 28px; font-weight: bold; color: cyan;")
         self.lbl_sat = QLabel("OK")
         self.lbl_sat.setStyleSheet("color: green; font-weight: bold;")
+
+        self.lbl_raw_vis = QLabel("Raw Vis: 0.000")
+        self.lbl_raw_vis.setStyleSheet("font-size: 16px; font-weight: bold; color: magenta;")
+        sl.addWidget(self.lbl_raw_vis, 3, 0, 1, 2)  # Span across both columns
         
         sl.addWidget(QLabel("Visibility:"), 0, 0); sl.addWidget(self.lbl_vis, 0, 1)
         sl.addWidget(QLabel("Beam Sigma:"), 1, 0); sl.addWidget(self.lbl_sigma, 1, 1)

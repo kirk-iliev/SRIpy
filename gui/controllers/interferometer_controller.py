@@ -253,6 +253,7 @@ class InterferometerController(QObject):
             self.view.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
 
         self.view.history_widget.add_point(res.mean_sigma)
+        self.view.controls.lbl_raw_vis.setText(f"Raw Vis: {res.raw_visibility:.3f}")
         QMessageBox.information(self.view, "Burst Done", f"Mean Sigma: {res.mean_sigma:.2f} um")
 
     def _handle_burst_error(self, msg):
@@ -286,20 +287,26 @@ class InterferometerController(QObject):
         # Update Text Numbers (Vis, Sigma)
         self.view.controls.lbl_vis.setText(f"{res.visibility:.3f}")
         self.view.controls.lbl_sigma.setText(f"{res.sigma_microns:.1f} um")
+        self.view.controls.lbl_raw_vis.setText(f"Raw Vis: {res.raw_visibility:.3f}")
 
         # Update Status Label (The Fix)
         is_saturated = self.model.last_saturated
 
         # Saturation Warning (Always show this if bad)
-        if is_saturated:
+        if self.model.is_static_mode():
+            if is_saturated:
+                # Inform user it's a file, but warn about data quality
+                self.view.controls.lbl_sat.setText("FILE (SAT)")
+                self.view.controls.lbl_sat.setStyleSheet("color: red; font-weight: bold; background-color: yellow;")
+            else:
+                self.view.controls.lbl_sat.setText("FILE LOADED")
+                self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
+
+        # Live View Saturation Warning
+        elif is_saturated:
             self.view.controls.lbl_sat.setText("SATURATED!")
             self.view.controls.lbl_sat.setStyleSheet("color: red; font-weight: bold; background-color: yellow;")
-
-        # Static File Loaded (If viewing a loaded file)
-        elif self.model.is_static_mode():
-            self.view.controls.lbl_sat.setText("FILE LOADED")
-            self.view.controls.lbl_sat.setStyleSheet("color: blue; font-weight: bold;")
-
+            
         # Normal Live Status
         else:
             self.view.controls.lbl_sat.setText("OK")

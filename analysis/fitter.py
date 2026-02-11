@@ -8,6 +8,7 @@ class FitResult:
     """Standardized container for interference fit results."""
     success: bool
     visibility: float = 0.0
+    raw_visibility: float = 0.0
     sigma_microns: float = 0.0
     fitted_curve: Optional[np.ndarray] = None
     params: Optional[Dict[str, float]] = None
@@ -57,12 +58,45 @@ class InterferenceFitter:
         sinc_sq = amp * ((np.sin(val) / val) ** 2)
         interf = 1 + visibility * np.sin(sine_freq * x + sine_phase)
         return baseline + sinc_sq * interf
+    
+
+    # --- Contrast Calculation ---
+    def _calculate_raw_contrast(self, y: np.ndarray) -> float:
+        """
+        Calculates simple (Imax - Imin) / (Imax + Imin) visibility.
+        Finds the global peak and the lowest valley in its immediate neighborhood.
+        """
+        try:
+            # 1. Find the Peak (Imax)
+            peak_idx = np.argmax(y)
+            i_max = y[peak_idx]
+
+            # 2. Find the Valley (Imin)
+            # We look in a local window around the peak (e.g., +/- 20 pixels)
+            # to find the nearest interference minimum, rather than the global minimum.
+            window = 20 
+            start = max(0, peak_idx - window)
+            stop = min(len(y), peak_idx + window)
+            
+            i_min = np.min(y[start:stop])
+
+            # 3. Calculate Contrast
+            denominator = i_max + i_min
+            if denominator <= 0:
+                return 0.0
+                
+            return (i_max - i_min) / denominator
+            
+        except Exception:
+            return 0.0
 
     # --- Fitting Logic ---
     def fit(self, lineout: np.ndarray) -> FitResult:
         # Sanitize Input
         y = np.nan_to_num(np.asarray(lineout, dtype=float))
         x = np.arange(len(y))
+
+        raw_vis = self._calculate_raw_contrast(y)
         
         # Fail early if signal is dead
         if (np.max(y) - np.min(y)) < self.min_signal:
@@ -226,6 +260,7 @@ class InterferenceFitter:
             return FitResult(
                 success=True,
                 visibility=vis,
+                raw_visibility=raw_vis,
                 sigma_microns=sigma * 1e6,
                 fitted_curve=fitted_curve,
                 params=params,

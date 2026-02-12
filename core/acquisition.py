@@ -4,13 +4,11 @@ import queue
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 from core.data_model import BurstResult
+from utils.image_utils import process_roi_lineout
 
 class BurstWorker(QObject):
     """
-    Handles high-speed burst processing.
-    Receives frames from a queue (CameraIoThread is sole driver owner).
-    Uses a two-phase 'Acquire-First, Fit-Later' strategy to decouple
-    camera timing from CPU-intensive analysis.
+    Worker for high-speed burst acquisition and post-process analysis.
     """
     progress = pyqtSignal(int)
     finished = pyqtSignal(object)
@@ -18,134 +16,99 @@ class BurstWorker(QObject):
 
     def __init__(self, frame_queue: queue.Queue, fitter, n_frames, roi_slice, roi_x_map, transpose=False, background=None):
         super().__init__()
-        self.frame_queue = frame_queue  # Receives frames from CameraIoThread
+        self.frame_queue = frame_queue
         self.fitter = fitter
         self.n_frames = n_frames
-        self.roi_slice = roi_slice
-        self.roi_x_map = roi_x_map
+        self.roi_slice = roi_slice      # Integration slice (rows)
+        self.roi_x_map = roi_x_map      # Measurement limits (columns/width)
         self.transpose = transpose
         self.background = background
         self.logger = logging.getLogger(__name__)
 
     def run_burst(self):
         try:
-            # Phase 1: Collect all frames from the queue (CameraIoThread pushes them)
+            # --- Phase 1: Acquisition ---
             raw_lineouts = []
             timestamps = []
-
-            self.logger.info(f"Burst: Waiting for {self.n_frames} frames from camera thread")
+            self.logger.info(f"Burst: Waiting for {self.n_frames} frames")
 
             captured_count = 0
             for i in range(self.n_frames):
-                # Timeout is generous as we wait for camera thread to deliver frames
                 try:
                     img = self.frame_queue.get(block=True, timeout=2.0)
                 except queue.Empty:
-                    self.logger.warning(f"Frame {i} timeout waiting for camera thread")
-                    self.error.emit(f"Frame acquisition timeout at frame {i}")
+                    self.logger.warning(f"Frame {i} timeout")
+                    self.error.emit(f"Acquisition timeout at frame {i}")
                     break
 
-                if img is None:
-                    self.logger.warning(f"Frame {i} dropped (sentinel)")
-                    continue
-
+                if img is None: continue
                 ts = time.time()
 
-                # Ensure image is float32 and contiguous for processing
-                img = np.array(img.squeeze(), dtype=np.float32, copy=True)
-                img = np.ascontiguousarray(img)
+                # Ensure img is a proper numpy array (may come as Vimba object)
+                try:
+                    if not isinstance(img, np.ndarray):
+                        img = np.asarray(img, dtype=np.uint16)
+                    else:
+                        # Ensure it's a copy and proper dtype if needed
+                        img = np.asarray(img, dtype=np.uint16)
+                except Exception as e:
+                    self.logger.warning(f"Frame {i} conversion error: {e}")
+                    continue
 
-                if self.background is not None and img.shape == self.background.shape:
-                    # Ensure background is same dtype and contiguous
-                    bg = self.background.astype(np.float32, copy=False)
-                    if not bg.flags['C_CONTIGUOUS']:
-                        bg = np.ascontiguousarray(bg)
-                    # In-place subtraction and clamp negatives to zero
-                    img -= bg
-                    np.clip(img, a_min=0, a_max=None, out=img)
+                # Use shared logic to get full lineout
+                _, full_lineout, _ = process_roi_lineout(
+                    img, self.roi_slice, self.transpose, self.background
+                )
 
-                if self.transpose:
-                    # Transpose can return non-contiguous views; make contiguous
-                    img = np.ascontiguousarray(img.T)
-
-                # Extract lineout with proper ROI handling
-                if self.transpose and self.roi_slice:
-                    # After transpose: image is (orig_width, orig_height)
-                    # roi_x_map (original column range) now indexes height
-                    # roi_slice (original row range) now indexes width
-                    row_slice = slice(int(self.roi_x_map[0]), int(self.roi_x_map[1]))
-                    lineout = self.fitter.get_lineout(img, row_slice)
-                elif self.roi_slice:
-                    # Normal orientation
-                    lineout = self.fitter.get_lineout(img, self.roi_slice)
-                else:
-                    lineout = self.fitter.get_lineout(img)
-
-                # Apply X-ROI
-                # After transpose swap, use roi_slice for column cropping
-                if self.transpose and self.roi_slice:
-                    # Columns are original rows
-                    x_min, x_max = int(self.roi_slice.start), int(self.roi_slice.stop)
-                elif self.roi_x_map:
-                    # Normal orientation
-                    x_min, x_max = self.roi_x_map
-                else:
-                    x_min, x_max = 0, len(lineout)
-
-                x_min = max(0, int(x_min))
-                x_max = min(len(lineout), int(x_max))
-                y_fit_data = lineout[x_min:x_max] if x_max > x_min else lineout
-
-                # Store raw data for Phase 2
-                raw_lineouts.append(np.nan_to_num(y_fit_data))
+                # Crop to measurement limits
+                x_start = int(self.roi_x_map[0])
+                x_stop = int(self.roi_x_map[1])
+                x_start = max(0, min(x_start, len(full_lineout)))
+                x_stop = max(x_start, min(x_stop, len(full_lineout)))
+                
+                raw_lineouts.append(np.nan_to_num(full_lineout[x_start:x_stop]))
                 timestamps.append(ts)
 
-                # Update progress: 0% -> 50% using captured frame count (1..n_frames)
                 captured_count += 1
-                pct = int(round((captured_count / float(self.n_frames)) * 50.0))
-                pct = max(0, min(50, pct))
-                self.progress.emit(pct)
+                self.progress.emit(int((captured_count / self.n_frames) * 50))
 
-            # Phase 2: Process stored data without real-time constraints
+            # --- Phase 2: Analysis ---
             vis_list = []
             sigma_list = []
             total_captured = len(raw_lineouts)
+            raw_vis_list = []
 
             if total_captured == 0:
-                # No frames captured; emit complete progress and finish
                 self.progress.emit(100)
-            else:
-                processed_count = 0
-                for i, y_data in enumerate(raw_lineouts):
-                    res = self.fitter.fit(y_data)
+                self.finished.emit(BurstResult())
+                return
 
-                    if res.success:
-                        vis_list.append(res.visibility)
-                        sigma_list.append(res.sigma_microns)
-                    else:
-                        vis_list.append(0.0)
-                        sigma_list.append(0.0)
+            for i, y_data in enumerate(raw_lineouts):
+                res = self.fitter.fit(y_data)
+                
+                if res.success:
+                    vis_list.append(res.visibility)
+                    sigma_list.append(res.sigma_microns)
+                    raw_vis_list.append(res.raw_visibility)
+                else:
+                    vis_list.append(0.0)
+                    sigma_list.append(0.0)
+                    raw_vis_list.append(0.0)
 
-                    processed_count += 1
-                    # Update progress: 50% -> 100% using processed_count
-                    pct = 50 + int(round((processed_count / float(total_captured)) * 50.0))
-                    pct = max(50, min(100, pct))
-                    self.progress.emit(pct)
+                pct = 50 + int(((i + 1) / total_captured) * 50)
+                self.progress.emit(max(50, min(100, pct)))
 
-                # Ensure we end at 100%
-                self.progress.emit(100)
-
-            # Compile and emit results
             burst_res = BurstResult(
-                n_frames = self.n_frames,
-                mean_visibility = float(np.mean(vis_list)) if vis_list else 0.0,
-                std_visibility = float(np.std(vis_list)) if vis_list else 0.0,
-                mean_sigma = float(np.mean(sigma_list)) if sigma_list else 0.0,
-                std_sigma = float(np.std(sigma_list)) if sigma_list else 0.0,
-                vis_history = vis_list,
-                sigma_history = sigma_list,
-                timestamps = timestamps,
-                lineout_history = raw_lineouts
+                n_frames=self.n_frames,
+                mean_visibility=float(np.mean(vis_list)) if vis_list else 0.0,
+                std_visibility=float(np.std(vis_list)) if vis_list else 0.0,
+                mean_sigma=float(np.mean(sigma_list)) if sigma_list else 0.0,
+                std_sigma=float(np.std(sigma_list)) if sigma_list else 0.0,
+                vis_history=vis_list,
+                sigma_history=sigma_list,
+                timestamps=timestamps,
+                lineout_history=raw_lineouts,
+                mean_raw_visibility=float(np.mean(raw_vis_list)) if raw_vis_list else 0.0
             )
             self.finished.emit(burst_res)
 

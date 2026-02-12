@@ -41,6 +41,7 @@ class BurstResult:
     std_visibility: float = 0.0
     mean_sigma: float = 0.0
     std_sigma: float = 0.0
+    mean_raw_visibility: float = 0.0
     
     # History Arrays
     vis_history: list = field(default_factory=list)

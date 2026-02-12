@@ -253,7 +253,9 @@ class InterferometerController(QObject):
             self.view.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
 
         self.view.history_widget.add_point(res.mean_sigma)
-        self.view.controls.lbl_raw_vis.setText(f"Raw Vis: {res.raw_visibility:.3f}")
+        # BurstResult has mean_raw_visibility (average across all frames in burst)
+        raw_vis_display = res.mean_raw_visibility if hasattr(res, 'mean_raw_visibility') else 0.0
+        self.view.controls.lbl_raw_vis.setText(f"Raw Visibility: {raw_vis_display:.3f}")
         QMessageBox.information(self.view, "Burst Done", f"Mean Sigma: {res.mean_sigma:.2f} um")
 
     def _handle_burst_error(self, msg):
@@ -287,7 +289,7 @@ class InterferometerController(QObject):
         # Update Text Numbers (Vis, Sigma)
         self.view.controls.lbl_vis.setText(f"{res.visibility:.3f}")
         self.view.controls.lbl_sigma.setText(f"{res.sigma_microns:.1f} um")
-        self.view.controls.lbl_raw_vis.setText(f"Raw Vis: {res.raw_visibility:.3f}")
+        self.view.controls.lbl_raw_vis.setText(f"Raw Visibility: {res.raw_visibility:.3f}")
 
         # Update Status Label (The Fix)
         is_saturated = self.model.last_saturated

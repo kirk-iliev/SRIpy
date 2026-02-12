@@ -33,6 +33,7 @@ from hardware.camera_io_thread import CameraIoThread, CameraCommand
 from core.config_manager import ConfigManager
 from analysis.fitter import InterferenceFitter, FitResult
 from analysis.analysis_worker import AnalysisWorker
+from utils.image_utils import process_roi_lineout
 
 class AcquisitionManager(QObject):
     # --- Signals ---
@@ -252,118 +253,71 @@ class AcquisitionManager(QObject):
         )
 
     # --- Processing Loop (Optimized) ---
+
+
     def _process_live_frame(self, raw_img):
         try:
-            # Convert to float32 and ensure C-contiguous for downstream processing
-            img = raw_img.squeeze().astype(np.float32, copy=False)
-            img = np.ascontiguousarray(img)
+            display_img, full_lineout, is_saturated = process_roi_lineout(
+                raw_img,
+                self.roi_slice,
+                self.transpose_enabled,
+                self.background_frame if self.subtract_background else None,
+                self.saturation_threshold
+            )
 
-            if self.subtract_background and self.background_frame is not None:
-                if img.shape == self.background_frame.shape:
-                    img -= self.background_frame
-                    np.clip(img, 0, None, out=img)
-
-            if self.transpose_enabled:
-                img = np.ascontiguousarray(img.T)
-
-            self.last_raw_image = img
-            # Check saturation in the original image (before any transpose or processing)
-            is_saturated = bool(np.max(img) >= self.saturation_threshold)
+            self.last_raw_image = display_img
+            self.last_lineout = full_lineout
+            
             if is_saturated != self.last_saturated:
                 self.last_saturated = is_saturated
                 self.saturation_updated.emit(is_saturated)
 
-            h, w = img.shape
+            
+            h, w = display_img.shape 
 
-            if self.transpose_enabled:
-                # Display rows correspond to original columns
-                disp_row_start, disp_row_stop = int(self.roi_x_limits[0]), int(self.roi_x_limits[1])
-                # Display columns correspond to original rows
-                disp_col_start, disp_col_stop = int(self.roi_slice.start), int(self.roi_slice.stop)
-            else:
-                disp_row_start, disp_row_stop = int(self.roi_slice.start), int(self.roi_slice.stop)
-                disp_col_start, disp_col_stop = int(self.roi_x_limits[0]), int(self.roi_x_limits[1])
-
-            # Clamp display-space ROI to image bounds
-            disp_row_start = max(0, min(disp_row_start, h - 1))
-            disp_row_stop = max(disp_row_start + 1, min(disp_row_stop, h))
+            # Clamp ROI to valid image bounds without modifying stored ROI
+            disp_col_start = int(self.roi_x_limits[0])
+            disp_col_stop = int(self.roi_x_limits[1])
+            
             disp_col_start = max(0, min(disp_col_start, w - 1))
             disp_col_stop = max(disp_col_start + 1, min(disp_col_stop, w))
 
-            # Map back to original coordinate system for storage
-            if self.transpose_enabled:
-                orig_row_start, orig_row_stop = disp_col_start, disp_col_stop
-                orig_col_start, orig_col_stop = disp_row_start, disp_row_stop
-            else:
-                orig_row_start, orig_row_stop = disp_row_start, disp_row_stop
-                orig_col_start, orig_col_stop = disp_col_start, disp_col_stop
+            self.live_data_ready.emit(display_img, full_lineout)
 
-            roi_changed = False
-            if (orig_row_start, orig_row_stop) != (self.roi_slice.start, self.roi_slice.stop):
-                self.roi_slice = slice(int(orig_row_start), int(orig_row_stop))
-                roi_changed = True
-            if (orig_col_start, orig_col_stop) != self.roi_x_limits:
-                self.roi_x_limits = (int(orig_col_start), int(orig_col_stop))
-                roi_changed = True
-            if roi_changed:
-                self.roi_updated.emit(
-                    self.roi_slice.start,
-                    self.roi_slice.stop,
-                    self.roi_x_limits[0],
-                    self.roi_x_limits[1],
-                )
-
-            # Extract lineout by summing the selected rows in display space
-            lineout = np.sum(img[disp_row_start:disp_row_stop, :], axis=0)
-
-            # Auto-Center
             if self.autocenter_enabled:
-                # Handle potential NaN/Inf in lineout
-                if np.all(np.isfinite(lineout)):
-                    peak_idx = np.argmax(lineout)
-                    if lineout[peak_idx] > self._autocenter_min_signal:
+                if np.all(np.isfinite(full_lineout)):
+                    peak_idx = np.argmax(full_lineout)
+                    
+                    if full_lineout[peak_idx] > self._autocenter_min_signal:
                         current_w = disp_col_stop - disp_col_start
                         new_min = max(0, peak_idx - current_w // 2)
                         new_max = min(w, new_min + current_w)
+                        
+                        new_cols = (int(new_min), int(new_max))
+                        
+                        if new_cols != self.roi_x_limits:
+                            self.roi_x_limits = new_cols
+                            disp_col_start, disp_col_stop = new_cols 
+                            
+                            self.roi_updated.emit(
+                                self.roi_slice.start, self.roi_slice.stop,
+                                self.roi_x_limits[0], self.roi_x_limits[1]
+                            )
+                            
 
-                        if self.transpose_enabled:
-                            # In transpose mode, lineout axis maps to original rows
-                            new_rows = (int(new_min), int(new_max))
-                            if new_rows != (self.roi_slice.start, self.roi_slice.stop):
-                                self.roi_slice = slice(new_rows[0], new_rows[1])
-                                self.roi_updated.emit(
-                                    self.roi_slice.start,
-                                    self.roi_slice.stop,
-                                    self.roi_x_limits[0],
-                                    self.roi_x_limits[1],
-                                )
-                        else:
-                            new_cols = (int(new_min), int(new_max))
-                            if new_cols != self.roi_x_limits:
-                                self.roi_x_limits = new_cols
-                                self.roi_updated.emit(
-                                    self.roi_slice.start,
-                                    self.roi_slice.stop,
-                                    self.roi_x_limits[0],
-                                    self.roi_x_limits[1],
-                                )
-
-            # Emit Data
-            self.last_lineout = lineout
-            self.live_data_ready.emit(img, lineout)
-
-            # Analysis
             now = time.time()
-            if self._analysis_busy and (now - self._last_fit_request_time) <= self._analysis_timeout_s:
-                return
-            if self._analysis_busy and (now - self._last_fit_request_time) > self._analysis_timeout_s:
-                if not self._analysis_timed_out:
-                    self.logger.warning("Analysis timeout; waiting for in-flight fit to finish")
-                    self._analysis_timed_out = True
-                return
+            if self._analysis_busy:
+                if (now - self._last_fit_request_time) > self._analysis_timeout_s:
+                    if not self._analysis_timed_out:
+                        self.logger.warning("Analysis timeout")
+                        self._analysis_timed_out = True
+                    return # Still busy/timed out
+                return # Still busy
+
             if disp_col_stop > disp_col_start:
-                fit_y = lineout[disp_col_start:disp_col_stop]
+                fit_y = full_lineout[disp_col_start:disp_col_stop]
                 fit_x = np.arange(disp_col_start, disp_col_stop)
+                
                 self._analysis_busy = True
                 self._last_fit_request_time = now
                 self._fit_request_id += 1
@@ -444,7 +398,7 @@ class AcquisitionManager(QObject):
                                     continue
                     if loaded_img is not None: break
 
-                # --- PART B: Metadata Extraction (The Fix) ---
+                # --- PART B: Metadata Extraction ---
                 self.logger.info(
                     f"Searching metadata inside {os.path.basename(file_path)}..."
                 )

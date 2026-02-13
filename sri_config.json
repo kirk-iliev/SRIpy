@@ -1,7 +1,7 @@
 {
     "camera": {
-        "exposure_ms": 16.0,
-        "gain_db": 7.0,
+        "exposure_ms": 11.0,
+        "gain_db": 21.0,
         "transpose": false,
         "subtract_background": false,
         "saturation_threshold": 4090

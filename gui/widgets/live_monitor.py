@@ -55,6 +55,12 @@ class LiveMonitorWidget(QWidget):
         self.lineout_plot.showGrid(x=True, y=True)
         self.curve_raw = self.lineout_plot.plot(pen=pg.mkPen('w', width=2), name="Raw")
         self.curve_fit = self.lineout_plot.plot(pen=pg.mkPen('r', width=3, style=Qt.PenStyle.DashLine), name="Fit")
+        
+        # Scatter plots for peak and valley
+        self.scatter_peak = pg.ScatterPlotItem(pen=pg.mkPen(None), brush=pg.mkBrush('yellow'), size=10, name="Peak")
+        self.scatter_valley = pg.ScatterPlotItem(pen=pg.mkPen(None), brush=pg.mkBrush('cyan'), size=10, name="Valley")
+        self.lineout_plot.addItem(self.scatter_peak)
+        self.lineout_plot.addItem(self.scatter_valley)
 
         # ROI: Fit Width Region (Horizontal)
         self.roi_fit_width = pg.LinearRegionItem(orientation='vertical', brush=(0, 255, 0, 30))  # type: ignore
@@ -98,6 +104,27 @@ class LiveMonitorWidget(QWidget):
     def update_fit(self, x_data, y_data):
         self.curve_fit.setData(x_data, y_data)
         self._auto_range_lineout(y_data)
+    
+    def update_peak_valley(self, peak_idx, valley_idx, y_data):
+        """Update the scatter plots for peak and valley indices."""
+        if y_data is None or len(y_data) == 0:
+            self.scatter_peak.clear()
+            self.scatter_valley.clear()
+            return
+        
+        y_array = np.asarray(y_data)
+        
+        # Clear previous points
+        self.scatter_peak.clear()
+        self.scatter_valley.clear()
+        
+        # Add peak point
+        if peak_idx is not None and 0 <= peak_idx < len(y_array):
+            self.scatter_peak.addPoints([{'x': peak_idx, 'y': y_array[peak_idx]}])
+        
+        # Add valley point
+        if valley_idx is not None and 0 <= valley_idx < len(y_array):
+            self.scatter_valley.addPoints([{'x': valley_idx, 'y': y_array[valley_idx]}])
 
     def _auto_range_lineout(self, y_data):
         if y_data is None:

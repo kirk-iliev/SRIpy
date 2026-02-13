@@ -285,6 +285,10 @@ class InterferometerController(QObject):
             self.view.live_widget.update_fit(x_data, res.fitted_curve)
         else:
             self.view.live_widget.update_fit([], [])
+        
+        # Update peak/valley scatter plot using stored lineout data
+        if hasattr(res, 'peak_idx') and hasattr(res, 'valley_idx'):
+            self.view.live_widget.update_peak_valley(res.peak_idx, res.valley_idx, self.model.last_lineout)
 
         # Update Text Numbers (Vis, Sigma)
         self.view.controls.lbl_vis.setText(f"{res.visibility:.3f}")

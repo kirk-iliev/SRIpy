@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.optimize import curve_fit
+from scipy.signal import find_peaks
 from dataclasses import dataclass
 from typing import Optional, Dict
 
@@ -15,6 +16,8 @@ class FitResult:
     param_errors: Optional[Dict[str, float]] = None
     pcov: Optional[np.ndarray] = None
     message: str = ""
+    peak_idx: Optional[int] = None
+    valley_idx: Optional[int] = None
 
 class InterferenceFitter:
     def __init__(self, wavelength: float = 550e-9, slit_separation: float = 0.05, distance: float = 16.5, min_signal: float = 50.0):
@@ -61,34 +64,52 @@ class InterferenceFitter:
     
 
     # --- Contrast Calculation ---
-    def _calculate_raw_contrast(self, y: np.ndarray) -> float:
+    def _calculate_raw_contrast(self, y: np.ndarray) -> tuple:
         """
         Calculates simple (Imax - Imin) / (Imax + Imin) visibility.
         Finds the global peak and the lowest valley in its immediate neighborhood.
+        Returns: (visibility, peak_idx, valley_idx)
         """
         try:
             # 1. Find the Peak (Imax)
             peak_idx = np.argmax(y)
             i_max = y[peak_idx]
-
-            # 2. Find the Valley (Imin)
-            # We look in a local window around the peak (e.g., +/- 20 pixels)
-            # to find the nearest interference minimum, rather than the global minimum.
-            window = 20 
-            start = max(0, peak_idx - window)
-            stop = min(len(y), peak_idx + window)
+            signal_range = np.max(y) - np.min(y)
+            valleys, _ = find_peaks(-y, prominence=signal_range * 0.05)
+            if len(valleys) == 0:
+                return 0.0, peak_idx, None
             
-            i_min = np.min(y[start:stop])
+            left_candidates = valleys[valleys < peak_idx]
+            right_candidates = valleys[valleys > peak_idx]
 
-            # 3. Calculate Contrast
+            i_mins = []
+            valley_indices = []
+            if len(left_candidates) > 0:
+                left_valley_idx = left_candidates[-1]
+                i_mins.append(y[left_valley_idx])
+                valley_indices.append(left_valley_idx)
+
+            if len(right_candidates) > 0:
+                right_valley_idx = right_candidates[0]
+                i_mins.append(y[right_valley_idx])
+                valley_indices.append(right_valley_idx)
+
+            if not i_mins:
+                i_min = np.min(y)
+                valley_idx = np.argmin(y)
+            else:
+                i_min = np.mean(i_mins)
+                # Use the valley closest to the peak
+                valley_idx = valley_indices[np.argmin(np.abs(np.array(valley_indices) - peak_idx))]
+
             denominator = i_max + i_min
-            if denominator <= 0:
-                return 0.0
-                
-            return (i_max - i_min) / denominator
+            if denominator == 0:
+                return 0.0, peak_idx, valley_idx
+
+            return (i_max - i_min) / denominator, peak_idx, valley_idx
             
         except Exception:
-            return 0.0
+            return 0.0, None, None
 
     # --- Fitting Logic ---
     def fit(self, lineout: np.ndarray) -> FitResult:
@@ -96,11 +117,11 @@ class InterferenceFitter:
         y = np.nan_to_num(np.asarray(lineout, dtype=float))
         x = np.arange(len(y))
 
-        raw_vis = self._calculate_raw_contrast(y)
+        raw_vis, peak_idx, valley_idx = self._calculate_raw_contrast(y)
         
         # Fail early if signal is dead
         if (np.max(y) - np.min(y)) < self.min_signal:
-             return FitResult(success=False, message="Low Signal")
+             return FitResult(success=False, message="Low Signal", peak_idx=peak_idx, valley_idx=valley_idx)
         
         # --- Stage 0: Gaussian Estimate (Find Center) ---
         peak_idx = np.argmax(y)
@@ -265,7 +286,9 @@ class InterferenceFitter:
                 fitted_curve=fitted_curve,
                 params=params,
                 param_errors=param_errors,
-                pcov=pcov
+                pcov=pcov,
+                peak_idx=peak_idx,
+                valley_idx=valley_idx
             )
             
         except RuntimeError as e:

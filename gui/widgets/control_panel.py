@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QGridLayout, 
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QGridLayout,
                              QLabel, QDoubleSpinBox, QCheckBox, QPushButton, QProgressBar, QHBoxLayout, QSpinBox)
 from PyQt6.QtCore import pyqtSignal
 
@@ -14,11 +14,12 @@ class ControlPanelWidget(QWidget):
     save_mat_clicked = pyqtSignal()
     reset_roi_clicked = pyqtSignal()
     load_file_clicked = pyqtSignal()
+    display_throttle_changed = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout(self)
-        
+
         # --- Analysis Results ---
         stats_group = QGroupBox("Analysis Results")
         sl = QGridLayout()
@@ -32,8 +33,8 @@ class ControlPanelWidget(QWidget):
         self.lbl_raw_vis = QLabel("Raw Vis: 0.000")
         self.lbl_raw_vis.setStyleSheet("font-size: 16px; font-weight: bold; color: magenta;")
         sl.addWidget(self.lbl_raw_vis, 3, 0, 1, 2)  # Span across both columns
-        
         sl.addWidget(QLabel("Visibility:"), 0, 0); sl.addWidget(self.lbl_vis, 0, 1)
+
         sl.addWidget(QLabel("Beam Sigma:"), 1, 0); sl.addWidget(self.lbl_sigma, 1, 1)
         sl.addWidget(QLabel("Sensor Status:"), 2, 0); sl.addWidget(self.lbl_sat, 2, 1)
         stats_group.setLayout(sl)
@@ -45,7 +46,7 @@ class ControlPanelWidget(QWidget):
         self.chk_autocenter = QCheckBox("Auto-Center ROI")
         self.chk_autocenter.setChecked(True)
         rl.addWidget(self.chk_autocenter)
-        
+
         self.btn_reset_roi = QPushButton("Reset / Find ROIs")
         self.btn_reset_roi.clicked.connect(lambda: self.reset_roi_clicked.emit())
         rl.addWidget(self.btn_reset_roi)
@@ -69,30 +70,39 @@ class ControlPanelWidget(QWidget):
         cgl = QGridLayout()
         self.chk_transpose = QCheckBox("Transpose Image")
         cgl.addWidget(self.chk_transpose, 0, 2)
-        
+
         cgl.addWidget(QLabel("Exp (ms):"), 0, 0)
         self.spin_exp = QDoubleSpinBox()
         self.spin_exp.setRange(0.05, 1000); self.spin_exp.setValue(5.0); self.spin_exp.setSingleStep(0.5)
         # Forward the numeric value to the exposure_changed signal
         self.spin_exp.valueChanged.connect(self.exposure_changed.emit)
         cgl.addWidget(self.spin_exp, 0, 1)
-        
+
         cgl.addWidget(QLabel("Gain (dB):"), 1, 0)
         self.spin_gain = QDoubleSpinBox()
         self.spin_gain.setRange(0, 40)
         # Forward the numeric value to the gain_changed signal
         self.spin_gain.valueChanged.connect(self.gain_changed.emit)
         cgl.addWidget(self.spin_gain, 1, 1)
+
+
+        cgl.addWidget(QLabel("Display Throttle (ms):"), 2, 0)
+        self.spin_throttle = QSpinBox()
+        self.spin_throttle.setRange(0, 200)
+        self.spin_throttle.setValue(0)
+        self.spin_throttle.setToolTip("0 = display every frame; higher values throttle frame rate")
+        self.spin_throttle.valueChanged.connect(self.display_throttle_changed.emit)
+        cgl.addWidget(self.spin_throttle, 2, 1)
+
         cam_group.setLayout(cgl)
         layout.addWidget(cam_group)
-
         # --- Physics ---
         phys_group = QGroupBox("Experiment Physics")
         pl = QGridLayout()
         self.spin_lambda = QDoubleSpinBox(); self.spin_lambda.setRange(200, 1500); self.spin_lambda.setValue(550.0)
         self.spin_slit = QDoubleSpinBox(); self.spin_slit.setRange(0.1, 1000); self.spin_slit.setValue(50.0)
         self.spin_dist = QDoubleSpinBox(); self.spin_dist.setRange(0.1, 100); self.spin_dist.setValue(16.5)
-        
+
         for s in [self.spin_lambda, self.spin_slit, self.spin_dist]:
             # Drop the numeric argument and emit a generic physics_changed signal
             s.valueChanged.connect(lambda _val, _self=self: _self.physics_changed.emit())

@@ -1,4 +1,4 @@
-import copy
+import copy, time
 import numpy as np
 from PyQt6.QtCore import QObject
 from PyQt6.QtWidgets import QMessageBox, QFileDialog
@@ -13,6 +13,10 @@ class InterferometerController(QObject):
         self.model = AcquisitionManager()
         self._suppress_roi_sync = False
         self._user_is_dragging = False  # Track user interaction state
+        self._display_throttle_ms = 0
+        self._last_display_update = 0
+
+        self.view.controls.display_throttle_changed.connect(self._set_display_throttle)
 
         self._connect_signals()
 
@@ -274,18 +278,39 @@ class InterferometerController(QObject):
             self.view.controls.btn_live.setStyleSheet("background-color: green; color: white; font-weight: bold;")
         QMessageBox.warning(self.view, "Burst Error", msg)
 
+    def _set_display_throttle(self, throttle_ms: int):
+        """Set the minimum time (in ms) between display updates."""
+        self._display_throttle_ms = throttle_ms
+
     def _update_display(self, img, lineout):
+        """Update display with optional throttling to control frame rate."""
+        # Check if enough time has passed since last display
+        now = time.time()
+        if self._display_throttle_ms > 0:
+            elapsed_ms = (now - self._last_display_time) * 1000
+            if elapsed_ms < self._display_throttle_ms:
+                return  # Skip this frame update
+
+        self._last_display_time = now
         self.view.live_widget.update_image(img)
         self.view.live_widget.update_lineout(np.arange(len(lineout)), lineout)
         self._update_saturation(self.model.last_saturated)
 
     def _update_stats(self, res, x_data):
+        """Update analysis results (fit curve, stats) with optional throttling to match display rate."""
+        # Apply same throttle to keep fit curve sync'd with lineout display
+        now = time.time()
+        if self._display_throttle_ms > 0:
+            elapsed_ms = (now - self._last_display_time) * 1000
+            if elapsed_ms < self._display_throttle_ms:
+                return  # Skip this stats update to stay in sync with display
+
         # Update Graphs
         if res.success:
             self.view.live_widget.update_fit(x_data, res.fitted_curve)
         else:
             self.view.live_widget.update_fit([], [])
-        
+
         # Update peak/valley scatter plot using stored lineout data
         if hasattr(res, 'peak_idx') and hasattr(res, 'valley_idx'):
             self.view.live_widget.update_peak_valley(res.peak_idx, res.valley_idx, self.model.last_lineout)
@@ -312,7 +337,7 @@ class InterferometerController(QObject):
         elif is_saturated:
             self.view.controls.lbl_sat.setText("SATURATED!")
             self.view.controls.lbl_sat.setStyleSheet("color: red; font-weight: bold; background-color: yellow;")
-            
+
         # Normal Live Status
         else:
             self.view.controls.lbl_sat.setText("OK")

@@ -30,16 +30,6 @@ class InterferenceFitter:
 
     # --- Data Preparation ---
 
-    def get_lineout(self, image: np.ndarray, roi_slice: Optional[slice] = None) -> np.ndarray:
-        if roi_slice:
-            data = image[roi_slice, :] if image.ndim == 2 else image
-        else:
-            data = image
-
-        if data.ndim > 1:
-            return np.sum(data, axis=0)
-        return data
-
     # --- Model Definitions ---
     def _gaussian(self, x: np.ndarray, baseline: float, amp: float, center: float, width: float) -> np.ndarray:
         return baseline + amp * np.exp(-((x - center) ** 2) / (2 * width ** 2))
@@ -54,14 +44,14 @@ class InterferenceFitter:
     def _sine_model(self, x: np.ndarray, baseline: float, amp: float, freq: float, phase: float) -> np.ndarray:
         return baseline + amp * np.sin(freq * x + phase)
 
-    def _full_interference_model(self, x: np.ndarray, baseline: float, amp: float, sinc_w: float, 
+    def _full_interference_model(self, x: np.ndarray, baseline: float, amp: float, sinc_w: float,
                                  sinc_x0: float, visibility: float, sine_freq: float, sine_phase: float) -> np.ndarray:
         val = sinc_w * (x - sinc_x0)
         val = np.where(np.isclose(val, 0), 1e-10, val)
         sinc_sq = amp * ((np.sin(val) / val) ** 2)
         interf = 1 + visibility * np.sin(sine_freq * x + sine_phase)
         return baseline + sinc_sq * interf
-    
+
 
     # --- Contrast Calculation ---
     def _calculate_raw_contrast(self, y: np.ndarray) -> tuple:
@@ -78,7 +68,7 @@ class InterferenceFitter:
             valleys, _ = find_peaks(-y, prominence=signal_range * 0.05)
             if len(valleys) == 0:
                 return 0.0, peak_idx, None
-            
+
             left_candidates = valleys[valleys < peak_idx]
             right_candidates = valleys[valleys > peak_idx]
 
@@ -107,7 +97,7 @@ class InterferenceFitter:
                 return 0.0, peak_idx, valley_idx
 
             return (i_max - i_min) / denominator, peak_idx, valley_idx
-            
+
         except Exception:
             return 0.0, None, None
 
@@ -118,16 +108,16 @@ class InterferenceFitter:
         x = np.arange(len(y))
 
         raw_vis, peak_idx, valley_idx = self._calculate_raw_contrast(y)
-        
+
         # Fail early if signal is dead
         if (np.max(y) - np.min(y)) < self.min_signal:
              return FitResult(success=False, message="Low Signal", peak_idx=peak_idx, valley_idx=valley_idx)
-        
+
         # --- Stage 0: Gaussian Estimate (Find Center) ---
         peak_idx = np.argmax(y)
         peak_val = y[peak_idx]
         min_val = np.min(y)
-        
+
         # Rough width estimate
         half_max = (peak_val + min_val) / 2
         above_half = np.where(y > half_max)[0]
@@ -135,14 +125,14 @@ class InterferenceFitter:
             est_width = (above_half[-1] - above_half[0]) / 2.0
         else:
             est_width = 50.0
-            
+
         p0_gauss = [min_val, peak_val - min_val, peak_idx, est_width]
-        
+
         try:
             bounds_g_min = [-np.inf, 0, 0, 0.1]
             bounds_g_max = [np.inf, np.inf, len(y), len(y)]
-            
-            popt_g, _ = curve_fit(self._gaussian, x, y, p0=p0_gauss, 
+
+            popt_g, _ = curve_fit(self._gaussian, x, y, p0=p0_gauss,
                       bounds=(bounds_g_min, bounds_g_max), maxfev=1000)
             center_guess = popt_g[2]
             width_guess = popt_g[3]
@@ -153,13 +143,13 @@ class InterferenceFitter:
 
         # --- Stage 1: Envelope Fit (Sinc^2) ---
         # Isolates the envelope shape to lock down center and width
-        est_sinc_w = 2.0 / (width_guess * 2) 
+        est_sinc_w = 2.0 / (width_guess * 2)
         p0_env = [min_val, peak_val - min_val, est_sinc_w, center_guess]
-        
+
         try:
             # Bounds: [base, amp, width, center]
             popt_env, _ = curve_fit(self._sinc_sq_envelope, x, y, p0=p0_env, maxfev=2000)
-            
+
             # Update guesses with robust envelope results
             env_base, env_amp, env_w, env_center = popt_env
         except Exception as e:
@@ -175,16 +165,16 @@ class InterferenceFitter:
             yf = np.fft.rfft(y_centered * window)
             xf = np.fft.rfftfreq(len(y))
             fft_mag = np.abs(yf)
-            
+
             # Dynamic low-frequency masking based on envelope width
             # The envelope spectrum is roughly 0 to env_w. Fringes must be > env_w.
             # k = 2*pi*f_idx/N  =>  f_idx = k*N / 2*pi
             cutoff_k = 1.5 * env_w  # Mask frequencies up to 1.5x the envelope width
             cutoff_idx = int((cutoff_k * len(y)) / (2 * np.pi))
             cutoff_idx = max(5, cutoff_idx) # Ensure we at least drop DC/very low freq
-            
-            fft_mag[0:cutoff_idx] = 0 
-            
+
+            fft_mag[0:cutoff_idx] = 0
+
             dominant_idx = np.argmax(fft_mag)
             est_freq = xf[dominant_idx]
             est_sine_k = 2 * np.pi * est_freq
@@ -197,14 +187,14 @@ class InterferenceFitter:
             npts = 50
             c_idx = int(env_center)
             x_min, x_max = max(0, c_idx - npts), min(len(y), c_idx + npts)
-            
+
             if x_max > x_min + 10:
                 y_roi = y[x_min:x_max]
                 x_roi = x[x_min:x_max]
-                
+
                 # Estimate sine amp from envelope amp in this region
                 p0_sine = [np.mean(y_roi), (np.max(y_roi)-np.min(y_roi))/2, est_sine_k, 0.0]
-                
+
                 # Loose bounds on frequency (+/- 20%)
                 freq_tol = 0.2 * est_sine_k
                 bs_min = [-np.inf, 0, max(0, est_sine_k - freq_tol), -np.pi]
@@ -221,23 +211,23 @@ class InterferenceFitter:
         # --- Stage 3: Full Visibility Fit ---
         # Combine results from Stage 1 & 2 as initial guesses
         p0_final = [env_base, env_amp, env_w, env_center, 0.5, sine_k_ref, sine_ph_ref]
-        
+
         # Constrain frequency to Stage 2 result (+/- 10%) to prevent lock jumping
         k_final_tol = 0.1 * sine_k_ref
-        
+
         bounds_min = [-np.inf, 0, 0, 0, 0.0, max(0, sine_k_ref - k_final_tol), -np.pi]
         bounds_max = [np.inf, np.inf, 1.0, len(y), 1.0, sine_k_ref + k_final_tol, np.pi]
-        
+
         try:
             popt, pcov = curve_fit(
-                self._full_interference_model, x, y, 
+                self._full_interference_model, x, y,
                 p0=p0_final, bounds=(bounds_min, bounds_max), maxfev=5000
             )
-            
+
             # Validate output parameters
             if not all(np.isfinite(popt)):
                 return FitResult(success=False, message="Fit converged but produced non-finite parameters")
-            
+
             vis = float(popt[4])
             # Clamp visibility to physical range
             vis = np.clip(vis, 0.0, 1.0)
@@ -290,7 +280,7 @@ class InterferenceFitter:
                 peak_idx=peak_idx,
                 valley_idx=valley_idx
             )
-            
+
         except RuntimeError as e:
             return FitResult(success=False, message=f"Fit Failed (convergence): {str(e)[:100]}")
         except ValueError as e:
@@ -298,35 +288,35 @@ class InterferenceFitter:
         except Exception as e:
             self.logger.error(f"Unexpected fit error: {e}", exc_info=True)
             return FitResult(success=False, message=f"Fit Failed (unexpected): {str(type(e).__name__)[:50]}")
-                
+
 
     def calculate_sigma(self, visibility: float) -> float:
         """Calculate beam sigma from visibility with robust error handling."""
         # Validate input
         if not np.isfinite(visibility):
             return 0.0
-        
+
         # Clamp visibility to valid range (avoid math domain errors)
         visibility = np.clip(visibility, 0.001, 0.999)
-        
+
         # Return 0 only if visibility extremely low (no useful signal)
         if visibility <= 0.001:
             return 0.0
-        
+
         coeff = (self.wavelength * self.distance) / (np.pi * self.slit_sep)
-        
+
         try:
             # Safely compute sigma
             arg = 0.5 * np.log(1.0 / visibility)
             if arg <= 0:
                 return 0.0
             sigma = coeff * np.sqrt(arg)
-            
+
             # Validate result
             if not np.isfinite(sigma) or sigma < 0:
                 return 0.0
             return sigma
-            
+
         except (ValueError, ZeroDivisionError, RuntimeError) as e:
             self.logger.debug(f"calculate_sigma: math error with visibility={visibility}: {e}")
             return 0.0

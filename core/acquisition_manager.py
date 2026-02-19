@@ -73,7 +73,7 @@ class AcquisitionManager(QObject):
         self._static_mode = False
         self._live_physics_backup: Optional[Tuple[float, float, float]] = None
 
-        # Cached outputs (typed for IDE support)
+        # Cached outputs
         self.last_raw_image: Optional[npt.NDArray] = None
         self.last_lineout: Optional[npt.NDArray] = None
         self.last_fit_result: Optional[FitResult] = None
@@ -267,18 +267,18 @@ class AcquisitionManager(QObject):
 
             self.last_raw_image = display_img
             self.last_lineout = full_lineout
-            
+
             if is_saturated != self.last_saturated:
                 self.last_saturated = is_saturated
                 self.saturation_updated.emit(is_saturated)
 
-            
-            h, w = display_img.shape 
+
+            h, w = display_img.shape
 
             # Clamp ROI to valid image bounds without modifying stored ROI
             disp_col_start = int(self.roi_x_limits[0])
             disp_col_stop = int(self.roi_x_limits[1])
-            
+
             disp_col_start = max(0, min(disp_col_start, w - 1))
             disp_col_stop = max(disp_col_start + 1, min(disp_col_stop, w))
 
@@ -287,23 +287,23 @@ class AcquisitionManager(QObject):
             if self.autocenter_enabled:
                 if np.all(np.isfinite(full_lineout)):
                     peak_idx = np.argmax(full_lineout)
-                    
+
                     if full_lineout[peak_idx] > self._autocenter_min_signal:
                         current_w = disp_col_stop - disp_col_start
                         new_min = max(0, peak_idx - current_w // 2)
                         new_max = min(w, new_min + current_w)
-                        
+
                         new_cols = (int(new_min), int(new_max))
-                        
+
                         if new_cols != self.roi_x_limits:
                             self.roi_x_limits = new_cols
-                            disp_col_start, disp_col_stop = new_cols 
-                            
+                            disp_col_start, disp_col_stop = new_cols
+
                             self.roi_updated.emit(
                                 self.roi_slice.start, self.roi_slice.stop,
                                 self.roi_x_limits[0], self.roi_x_limits[1]
                             )
-                            
+
 
             now = time.time()
             if self._analysis_busy:
@@ -317,7 +317,7 @@ class AcquisitionManager(QObject):
             if disp_col_stop > disp_col_start:
                 fit_y = full_lineout[disp_col_start:disp_col_stop]
                 fit_x = np.arange(disp_col_start, disp_col_stop)
-                
+
                 self._analysis_busy = True
                 self._last_fit_request_time = now
                 self._fit_request_id += 1

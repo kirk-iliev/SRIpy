@@ -1,6 +1,7 @@
 import logging
 from hardware.manta_driver import MantaDriver
 from analysis.fitter import InterferenceFitter
+from utils.image_utils import process_roi_lineout
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -10,29 +11,32 @@ def main():
     # 1. Connect and Snap
     driver = MantaDriver() # Add ID if needed
     driver.connect()
-    
+
     driver.exposure = 0.005  # 5ms
     driver.gain = 0
-    
+
     logger.info("Acquiring image...")
     img = driver.acquire_frame()
     driver.close()
-    
+
     # 2. Analyze
     fitter = InterferenceFitter()
-    
-    # Collapse to 1D
-    lineout = fitter.get_lineout(img)
-    
+
+    # Collapse to 1D using full pipeline (background sub, ROI extraction, saturation check)
+    roi_slice = slice(400, 800)  # Default ROI rows
+    display_img, lineout, is_saturated = process_roi_lineout(
+        img, roi_slice, transpose=False, bg_frame=None, saturation_thresh=4095
+    )
+
     # Fit
     logger.info("Fitting data...")
     res = fitter.fit(lineout)
-    
+
     if res:
         logger.info("FIT SUCCESS!")
         logger.info(f"Visibility: {res['visibility']:.4f}")
         logger.info(f"Beam Sigma: {res['sigma']*1e6:.2f} microns")
-        
+
         # 3. Plot Result
         plt.figure(figsize=(10, 6))
         plt.plot(lineout, label='Raw Data (Summed)', color='black', alpha=0.6)

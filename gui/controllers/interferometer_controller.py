@@ -131,11 +131,7 @@ class InterferometerController(QObject):
             return
         rows = self.view.live_widget.get_roi_rows()
         width = self.view.live_widget.get_roi_width()
-        if self.view.controls.chk_transpose.isChecked():
-            # Display rows map to original columns; display width maps to original rows
-            self.model.set_roi(width[0], width[1], rows[0], rows[1])
-        else:
-            self.model.set_roi(rows[0], rows[1], width[0], width[1])
+        self.model.set_roi(rows[0], rows[1], width[0], width[1])
 
     def _reset_roi(self):
         """Reset ROI to default values and DISABLE autocenter."""
@@ -368,12 +364,17 @@ class InterferometerController(QObject):
 
     def _handle_transpose_toggled(self, checked: bool):
         self.model.set_transpose(checked)
-        # Refresh ROI display to match orientation
+
+        # ONE-TIME JUMP: When transpose is toggled, swap the UI boxes
+        # so they visually rotate with the beam on the screen.
+        old_rows = self.view.live_widget.get_roi_rows()
+        old_width = self.view.live_widget.get_roi_width()
+
         self._apply_model_roi(
-            self.model.roi_slice.start,
-            self.model.roi_slice.stop,
-            self.model.roi_x_limits[0],
-            self.model.roi_x_limits[1],
+            y_min=old_width[0],
+            y_max=old_width[1],
+            x_min=old_rows[0],
+            x_max=old_rows[1]
         )
 
     def _apply_model_roi(self, y_min, y_max, x_min, x_max):
@@ -382,13 +383,10 @@ class InterferometerController(QObject):
 
         self._suppress_roi_sync = True
         try:
-            if self.view.controls.chk_transpose.isChecked():
-                # Display rows map to original columns; display width maps to original rows
-                self.view.live_widget.set_roi_rows(x_min, x_max)
-                self.view.live_widget.set_roi_width(y_min, y_max)
-            else:
-                self.view.live_widget.set_roi_rows(y_min, y_max)
-                self.view.live_widget.set_roi_width(x_min, x_max)
+            # Always map roi_slice to display rows, roi_x_limits to display width
+            # The image transpose handles coordinate swapping automatically
+            self.view.live_widget.set_roi_rows(y_min, y_max)
+            self.view.live_widget.set_roi_width(x_min, x_max)
         finally:
             self._suppress_roi_sync = False
 
@@ -472,14 +470,9 @@ class InterferometerController(QObject):
 
     def _save_current_config(self):
         """Scrape UI settings and save to disk via ConfigManager."""
-        rows = self.view.live_widget.get_roi_rows()
-        width = self.view.live_widget.get_roi_width()
-        if self.view.controls.chk_transpose.isChecked():
-            rows_min, rows_max = width[0], width[1]
-            fit_width_min, fit_width_max = rows[0], rows[1]
-        else:
-            rows_min, rows_max = rows[0], rows[1]
-            fit_width_min, fit_width_max = width[0], width[1]
+        rows_min = int(self.model.roi_slice.start)
+        rows_max = int(self.model.roi_slice.stop)
+        fit_width_min, fit_width_max = self.model.roi_x_limits
 
         ui_config = copy.deepcopy(self.model.cfg)
 

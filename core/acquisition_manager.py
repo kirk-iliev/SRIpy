@@ -4,21 +4,24 @@ Acquisition Manager - Central model coordinating camera, ROI, and analysis.
 
 Coordinate System Notes:
 ------------------------
-The ROI is stored in ORIGINAL (camera-native) coordinates, even when transpose
-is enabled. This ensures configuration is saved/loaded consistently regardless
-of the current transpose state.
+The ROI is stored in ORIGINAL (camera-native) coordinates, independent of
+transpose state. This ensures configuration remains consistent when saving/loading.
 
-- `roi_slice`: Rows in the **original** image (vertical strip before transpose)
-- `roi_x_limits`: Columns in the **original** image (horizontal range before transpose)
+- `roi_slice`: Rows in the original image (defines vertical binning region)
+- `roi_x_limits`: Columns in the original image (defines horizontal fit region)
 
-When `transpose_enabled=True`, the display image is `img.T`, so:
-- Original rows become display columns
-- Original columns become display rows
+UI Coordinate Mapping (InterferometerController):
+- Display vertical ROI box → always maps to `roi_slice` (ui rows to model rows)
+- Display horizontal ROI box → always maps to `roi_x_limits` (ui width to model x_limits)
+- When transpose is toggled, UI boxes perform ONE-TIME swap to visually track the beam
 
-The `_process_live_frame()` method maps between these coordinate systems:
-1. Load original coords from `roi_slice` / `roi_x_limits`
-2. Swap to display-space for visual operations
-3. Map back to original coords when storing updates
+Image Processing (process_roi_lineout in image_utils.py):
+- When transpose=False: crops rows using roi_slice, integrates horizontally → lineout length = image width
+- When transpose=True: crops columns using roi_slice, integrates vertically → lineout length = image height
+- The display image automatically transposes (img.T), so visual axes swap without controller logic
+- Fit region indices in roi_x_limits directly index the resulting lineout coordinates
+
+Result: Clean 1:1 mapping throughout. No coordinate swapping in controller or model.
 """
 import logging
 import time

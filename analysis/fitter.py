@@ -1,8 +1,9 @@
 import numpy as np
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
+from scipy.ndimage import uniform_filter1d
 from dataclasses import dataclass
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 
 @dataclass
 class FitResult:
@@ -15,6 +16,7 @@ class FitResult:
     params: Optional[Dict[str, float]] = None
     param_errors: Optional[Dict[str, float]] = None
     pcov: Optional[np.ndarray] = None
+    fit_x: Optional[np.ndarray] = None
     message: str = ""
     peak_idx: Optional[int] = None
     valley_idx: Optional[int] = None
@@ -102,121 +104,187 @@ class InterferenceFitter:
             return 0.0, None, None
 
     # --- Fitting Logic ---
-    def fit(self, lineout: np.ndarray) -> FitResult:
+    def fit(self, lineout: np.ndarray, roi_hint: Optional[Tuple[int, int]] = None) -> FitResult:
+        """
+        Fit interference pattern using multi-stage approach.
+
+        Follows the MATLAB intdisplay_sinc2 strategy:
+          0. Gaussian fit on FULL data → robust center finding
+          1. Sinc² envelope fit on FULL data → baseline + envelope params
+          2. FFT on FULL data → fringe frequency estimate
+          3. Sine fit on narrow region around center → phase/freq refinement
+          4. Full model fit on centered region → visibility extraction
+
+        This ensures the fit always tracks the beam center regardless of the
+        display ROI position, eliminating jitter and ROI-sensitivity.
+
+        Args:
+            lineout: 1D interference pattern (ideally full extent).
+            roi_hint: Optional (start, stop) pixel range from display ROI.
+                      Determines fit region WIDTH only; the region is always
+                      centered on the internally-found peak, not the ROI center.
+                      If None, fits over the full input range (backward compat).
+        """
         # Sanitize Input
-        y = np.nan_to_num(np.asarray(lineout, dtype=float))
-        x = np.arange(len(y))
+        y_full = np.nan_to_num(np.asarray(lineout, dtype=float))
+        x_full = np.arange(len(y_full))
+        n_full = len(y_full)
 
-        raw_vis, peak_idx, valley_idx = self._calculate_raw_contrast(y)
+        # --- Smoothed peak detection (reduces noise-induced center jumps) ---
+        smooth_size = max(3, min(15, n_full // 100))
+        y_smooth = uniform_filter1d(y_full, size=smooth_size)
+        peak_idx_rough = int(np.argmax(y_smooth))
+        peak_val = float(y_full[peak_idx_rough])
+        min_val = float(np.min(y_full))
+        signal_range = peak_val - min_val
 
-        # Fail early if signal is dead
-        if (np.max(y) - np.min(y)) < self.min_signal:
-             return FitResult(success=False, message="Low Signal", peak_idx=peak_idx, valley_idx=valley_idx)
+        if signal_range < self.min_signal:
+            return FitResult(success=False, message="Low Signal", peak_idx=peak_idx_rough)
 
-        # --- Stage 0: Gaussian Estimate (Find Center) ---
-        peak_idx = np.argmax(y)
-        peak_val = y[peak_idx]
-        min_val = np.min(y)
-
-        # Rough width estimate
+        # === Stage 0: Gaussian on Full Data → Robust Center Finding ===
         half_max = (peak_val + min_val) / 2
-        above_half = np.where(y > half_max)[0]
-        if len(above_half) > 1:
-            est_width = (above_half[-1] - above_half[0]) / 2.0
-        else:
-            est_width = 50.0
+        above_half = np.where(y_full > half_max)[0]
+        est_width = float((above_half[-1] - above_half[0]) / 2.0) if len(above_half) > 1 else 50.0
+        est_width = max(est_width, 5.0)
 
-        p0_gauss = [min_val, peak_val - min_val, peak_idx, est_width]
-
+        p0_gauss = [min_val, signal_range, peak_idx_rough, est_width]
         try:
-            bounds_g_min = [-np.inf, 0, 0, 0.1]
-            bounds_g_max = [np.inf, np.inf, len(y), len(y)]
-
-            popt_g, _ = curve_fit(self._gaussian, x, y, p0=p0_gauss,
-                      bounds=(bounds_g_min, bounds_g_max), maxfev=1000)
-            center_guess = popt_g[2]
-            width_guess = popt_g[3]
+            popt_g, _ = curve_fit(
+                self._gaussian, x_full, y_full, p0=p0_gauss,
+                bounds=([-np.inf, 0, 0, 0.1], [np.inf, np.inf, n_full, n_full]),
+                maxfev=1000
+            )
+            center_guess = float(popt_g[2])
+            width_guess = float(popt_g[3])
         except Exception as e:
             self.logger.debug(f"Gaussian fit fallback: {e}")
-            center_guess = peak_idx
+            center_guess = float(peak_idx_rough)
             width_guess = est_width
 
-        # --- Stage 1: Envelope Fit (Sinc^2) ---
-        # Isolates the envelope shape to lock down center and width
-        est_sinc_w = 2.0 / (width_guess * 2)
-        p0_env = [min_val, peak_val - min_val, est_sinc_w, center_guess]
+        # === Stage 1: Sinc² Envelope on Full Data → Lock Baseline ===
+        # (Like MATLAB: fits sinc² to entire IMG.IntPattern before cropping)
+        est_sinc_w = 2.0 / max(width_guess * 2, 1.0)
+        p0_env = [min_val, signal_range, est_sinc_w, center_guess]
 
         try:
-            # Bounds: [base, amp, width, center]
-            popt_env, _ = curve_fit(self._sinc_sq_envelope, x, y, p0=p0_env, maxfev=2000)
-
-            # Update guesses with robust envelope results
-            env_base, env_amp, env_w, env_center = popt_env
+            popt_env, _ = curve_fit(
+                self._sinc_sq_envelope, x_full, y_full, p0=p0_env, maxfev=2000
+            )
+            env_base, env_amp, env_w, env_center = [float(v) for v in popt_env]
         except Exception as e:
             self.logger.debug(f"Envelope fit fallback: {e}")
-            # Fallback to Gaussian results if Sinc fit fails
-            env_base, env_amp, env_w, env_center = min_val, peak_val-min_val, est_sinc_w, center_guess
+            env_base, env_amp, env_w, env_center = min_val, signal_range, est_sinc_w, center_guess
 
-        # --- Stage 2: Sine Fit (Fringes) ---
-        # FFT for frequency estimate
+        # Update center from envelope fit (more robust than Gaussian alone)
+        center = env_center
+
+        # === Determine Fit Region (centered on found peak, not ROI center) ===
+        if roi_hint is not None:
+            # Use ROI width, but CENTER on found peak
+            fit_half_width = int((roi_hint[1] - roi_hint[0]) / 2)
+            fit_half_width = max(fit_half_width, 50)
+        else:
+            # No ROI hint: fit full range (backward compat with tests)
+            fit_half_width = n_full
+
+        center_idx = int(round(center))
+        center_idx = max(0, min(n_full - 1, center_idx))
+        fit_start = max(0, center_idx - fit_half_width)
+        fit_stop = min(n_full, center_idx + fit_half_width)
+
+        if fit_stop - fit_start < 30:
+            fit_start = max(0, center_idx - 50)
+            fit_stop = min(n_full, center_idx + 50)
+
+        y = y_full[fit_start:fit_stop]
+        x = np.arange(fit_start, fit_stop)
+
+        # Raw visibility on centered region
+        raw_vis, peak_idx_local, valley_idx_local = self._calculate_raw_contrast(y)
+        peak_idx_abs = (peak_idx_local + fit_start) if peak_idx_local is not None else None
+        valley_idx_abs = (valley_idx_local + fit_start) if valley_idx_local is not None else None
+
+        # === Stage 2: FFT on Full Lineout → Frequency Estimate ===
+        # (Like MATLAB: ffts=abs(fft(s)) on full waveform, not the crop)
         try:
-            y_centered = y - np.mean(y)
-            window = np.hanning(len(y))
-            yf = np.fft.rfft(y_centered * window)
-            xf = np.fft.rfftfreq(len(y))
+            y_ac = y_full - np.mean(y_full)
+            window = np.hanning(n_full)
+            yf = np.fft.rfft(y_ac * window)
+            xf = np.fft.rfftfreq(n_full)
             fft_mag = np.abs(yf)
 
-            # Dynamic low-frequency masking based on envelope width
-            # The envelope spectrum is roughly 0 to env_w. Fringes must be > env_w.
-            # k = 2*pi*f_idx/N  =>  f_idx = k*N / 2*pi
-            cutoff_k = 1.5 * env_w  # Mask frequencies up to 1.5x the envelope width
-            cutoff_idx = int((cutoff_k * len(y)) / (2 * np.pi))
-            cutoff_idx = max(5, cutoff_idx) # Ensure we at least drop DC/very low freq
-
+            # Mask envelope frequencies
+            cutoff_k = 1.5 * abs(env_w) if abs(env_w) > 1e-6 else 0.01
+            cutoff_idx = int((cutoff_k * n_full) / (2 * np.pi))
+            cutoff_idx = max(5, cutoff_idx)
             fft_mag[0:cutoff_idx] = 0
 
-            dominant_idx = np.argmax(fft_mag)
-            est_freq = xf[dominant_idx]
-            est_sine_k = 2 * np.pi * est_freq
+            dominant_idx = int(np.argmax(fft_mag))
+            est_sine_k = float(2 * np.pi * xf[dominant_idx]) if dominant_idx > 0 else 0.3
         except Exception as e:
             self.logger.debug(f"FFT frequency estimate fallback: {e}")
             est_sine_k = 0.3
 
-        # Refine sine params by fitting only the central region
+        if est_sine_k < 0.01:
+            est_sine_k = 0.3
+
+        # === Stage 3: Sine Fit on Narrow Region Around Center ===
+        # (Like MATLAB: npts=50 for sinusoid fitting around the found peak)
+        npts_sine = 50
+        sine_start = max(fit_start, center_idx - npts_sine)
+        sine_stop = min(fit_stop, center_idx + npts_sine)
+
+        sine_k_ref = est_sine_k
+        sine_ph_ref = 0.0
+
         try:
-            npts = 50
-            c_idx = int(env_center)
-            x_min, x_max = max(0, c_idx - npts), min(len(y), c_idx + npts)
+            if sine_stop - sine_start > 10:
+                y_sine = y_full[sine_start:sine_stop]
+                x_sine = np.arange(sine_start, sine_stop)
 
-            if x_max > x_min + 10:
-                y_roi = y[x_min:x_max]
-                x_roi = x[x_min:x_max]
-
-                # Estimate sine amp from envelope amp in this region
-                p0_sine = [np.mean(y_roi), (np.max(y_roi)-np.min(y_roi))/2, est_sine_k, 0.0]
-
-                # Loose bounds on frequency (+/- 20%)
-                freq_tol = 0.2 * est_sine_k
-                bs_min = [-np.inf, 0, max(0, est_sine_k - freq_tol), -np.pi]
+                p0_sine = [float(np.mean(y_sine)),
+                           float((np.max(y_sine) - np.min(y_sine)) / 2),
+                           est_sine_k, 0.0]
+                freq_tol = 0.2 * max(est_sine_k, 0.01)
+                bs_min = [-np.inf, 0, max(0.001, est_sine_k - freq_tol), -np.pi]
                 bs_max = [np.inf, np.inf, est_sine_k + freq_tol, np.pi]
 
-                popt_sine, _ = curve_fit(self._sine_model, x_roi, y_roi, p0=p0_sine, bounds=(bs_min, bs_max), maxfev=2000)
-                sine_k_ref, sine_ph_ref = popt_sine[2], popt_sine[3]
-            else:
-                sine_k_ref, sine_ph_ref = est_sine_k, 0.0
+                popt_sine, _ = curve_fit(
+                    self._sine_model, x_sine, y_sine, p0=p0_sine,
+                    bounds=(bs_min, bs_max), maxfev=2000
+                )
+                sine_k_ref = float(popt_sine[2])
+                sine_ph_ref = float(popt_sine[3])
         except Exception as e:
             self.logger.debug(f"Sine fit refinement fallback: {e}")
-            sine_k_ref, sine_ph_ref = est_sine_k, 0.0
 
-        # --- Stage 3: Full Visibility Fit ---
-        # Combine results from Stage 1 & 2 as initial guesses
-        p0_final = [env_base, env_amp, env_w, env_center, 0.5, sine_k_ref, sine_ph_ref]
+        # === Stage 4: Full Visibility Fit on Centered Region ===
+        # MATLAB approach: lock baseline near envelope fit value to prevent
+        # baseline/visibility parameter trading that causes instability
+        p0_final = [env_base, env_amp, env_w, center, 0.5, sine_k_ref, sine_ph_ref]
 
-        # Constrain frequency to Stage 2 result (+/- 10%) to prevent lock jumping
-        k_final_tol = 0.1 * sine_k_ref
+        k_final_tol = 0.1 * max(sine_k_ref, 0.01)
+        base_tol = max(abs(env_base) * 0.5, 20.0)
+        center_tol = 30.0
 
-        bounds_min = [-np.inf, 0, 0, 0, 0.0, max(0, sine_k_ref - k_final_tol), -np.pi]
-        bounds_max = [np.inf, np.inf, 1.0, len(y), 1.0, sine_k_ref + k_final_tol, np.pi]
+        bounds_min = [
+            env_base - base_tol,                         # baseline (locked near envelope)
+            0,                                           # amplitude
+            0,                                           # sinc_width
+            max(float(fit_start), center - center_tol),  # center (tight)
+            0.0,                                         # visibility
+            max(0.001, sine_k_ref - k_final_tol),        # sine_k
+            -np.pi                                       # sine_phase
+        ]
+        bounds_max = [
+            env_base + base_tol,
+            np.inf,
+            5.0,
+            min(float(fit_stop), center + center_tol),
+            1.0,
+            sine_k_ref + k_final_tol,
+            np.pi
+        ]
 
         try:
             popt, pcov = curve_fit(
@@ -224,13 +292,11 @@ class InterferenceFitter:
                 p0=p0_final, bounds=(bounds_min, bounds_max), maxfev=5000
             )
 
-            # Validate output parameters
             if not all(np.isfinite(popt)):
-                return FitResult(success=False, message="Fit converged but produced non-finite parameters")
+                return FitResult(success=False, message="Fit converged but produced non-finite parameters",
+                                 peak_idx=peak_idx_abs, valley_idx=valley_idx_abs)
 
-            vis = float(popt[4])
-            # Clamp visibility to physical range
-            vis = np.clip(vis, 0.0, 1.0)
+            vis = float(np.clip(popt[4], 0.0, 1.0))
             sigma = self.calculate_sigma(vis)
 
             params = {
@@ -238,7 +304,7 @@ class InterferenceFitter:
                 'amplitude': float(popt[1]),
                 'sinc_width': float(popt[2]),
                 'sinc_center': float(popt[3]),
-                'visibility': vis,  # Use clamped value
+                'visibility': vis,
                 'sine_k': float(popt[5]),
                 'sine_phase': float(popt[6]),
             }
@@ -257,7 +323,6 @@ class InterferenceFitter:
                 }
             except Exception as e:
                 self.logger.debug(f"Param error estimation failed: {e}")
-                param_errors = None
 
             try:
                 fitted_curve = self._full_interference_model(x, *popt)
@@ -274,20 +339,24 @@ class InterferenceFitter:
                 raw_visibility=raw_vis,
                 sigma_microns=sigma * 1e6,
                 fitted_curve=fitted_curve,
+                fit_x=x.copy(),
                 params=params,
                 param_errors=param_errors,
                 pcov=pcov,
-                peak_idx=peak_idx,
-                valley_idx=valley_idx
+                peak_idx=peak_idx_abs,
+                valley_idx=valley_idx_abs
             )
 
         except RuntimeError as e:
-            return FitResult(success=False, message=f"Fit Failed (convergence): {str(e)[:100]}")
+            return FitResult(success=False, message=f"Fit Failed (convergence): {str(e)[:100]}",
+                             peak_idx=peak_idx_abs, valley_idx=valley_idx_abs)
         except ValueError as e:
-            return FitResult(success=False, message=f"Fit Failed (invalid data): {str(e)[:100]}")
+            return FitResult(success=False, message=f"Fit Failed (invalid data): {str(e)[:100]}",
+                             peak_idx=peak_idx_abs, valley_idx=valley_idx_abs)
         except Exception as e:
             self.logger.error(f"Unexpected fit error: {e}", exc_info=True)
-            return FitResult(success=False, message=f"Fit Failed (unexpected): {str(type(e).__name__)[:50]}")
+            return FitResult(success=False, message=f"Fit Failed (unexpected): {str(type(e).__name__)[:50]}",
+                             peak_idx=peak_idx_abs, valley_idx=valley_idx_abs)
 
 
     def calculate_sigma(self, visibility: float) -> float:

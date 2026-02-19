@@ -1,4 +1,5 @@
 import logging
+import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 from analysis.fitter import FitResult
 
@@ -27,13 +28,29 @@ class AnalysisWorker(QObject):
         """
         Runs the fitting analysis in a separate thread. Acquires a lock to ensure
         that physics parameters (lambda/slit/dist) are not changed mid-fit.
+
+        x_data may be:
+          - a tuple (roi_start, roi_stop): passed as roi_hint to the fitter
+          - an ndarray: legacy x coordinates (backward compat)
         """
         try:
+            # Determine if x_data is a ROI hint (tuple) or legacy x coords (ndarray)
+            roi_hint = x_data if isinstance(x_data, tuple) else None
+
             # Acquire lock to ensure physics parameters are stable during fit
             with self._fitter_lock:
-                fit_result = self.fitter.fit(y_data)
+                fit_result = self.fitter.fit(y_data, roi_hint=roi_hint)
 
-            self.result_ready.emit(fit_result, x_data, req_id)
+            # Use fit_x from result if available (new centered fitting),
+            # otherwise fall back to legacy x_data
+            if fit_result.fit_x is not None:
+                out_x = fit_result.fit_x
+            elif isinstance(x_data, np.ndarray):
+                out_x = x_data
+            else:
+                out_x = np.arange(len(y_data))
+
+            self.result_ready.emit(fit_result, out_x, req_id)
 
         except Exception as e:
             self.logger.error(f"Analysis Failed (Req {req_id}): {e}", exc_info=True)

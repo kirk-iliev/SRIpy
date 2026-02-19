@@ -14,7 +14,7 @@ class InterferometerController(QObject):
         self._suppress_roi_sync = False
         self._user_is_dragging = False  # Track user interaction state
         self._display_throttle_ms = 0
-        self._last_display_update = 0
+        self._last_display_time = 0
 
         self.view.controls.display_throttle_changed.connect(self._set_display_throttle)
 

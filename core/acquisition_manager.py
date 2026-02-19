@@ -292,20 +292,39 @@ class AcquisitionManager(QObject):
                     peak_idx = np.argmax(full_lineout)
 
                     if full_lineout[peak_idx] > self._autocenter_min_signal:
-                        current_w = disp_col_stop - disp_col_start
-                        new_min = max(0, peak_idx - current_w // 2)
-                        new_max = min(w, new_min + current_w)
+                        if self.transpose_enabled:
+                            # When transpose=True: lineout is vertical integration (rows)
+                            # peak_idx indexes rows; should update roi_slice (row range)
+                            current_h = self.roi_slice.stop - self.roi_slice.start
+                            new_min = max(0, peak_idx - current_h // 2)
+                            new_max = min(h, new_min + current_h)
 
-                        new_cols = (int(new_min), int(new_max))
+                            new_rows = slice(int(new_min), int(new_max))
 
-                        if new_cols != self.roi_x_limits:
-                            self.roi_x_limits = new_cols
-                            disp_col_start, disp_col_stop = new_cols
+                            if new_rows != self.roi_slice:
+                                self.roi_slice = new_rows
 
-                            self.roi_updated.emit(
-                                self.roi_slice.start, self.roi_slice.stop,
-                                self.roi_x_limits[0], self.roi_x_limits[1]
-                            )
+                                self.roi_updated.emit(
+                                    self.roi_slice.start, self.roi_slice.stop,
+                                    self.roi_x_limits[0], self.roi_x_limits[1]
+                                )
+                        else:
+                            # When transpose=False: lineout is horizontal integration (columns)
+                            # peak_idx indexes columns; should update roi_x_limits (column range)
+                            current_w = disp_col_stop - disp_col_start
+                            new_min = max(0, peak_idx - current_w // 2)
+                            new_max = min(w, new_min + current_w)
+
+                            new_cols = (int(new_min), int(new_max))
+
+                            if new_cols != self.roi_x_limits:
+                                self.roi_x_limits = new_cols
+                                disp_col_start, disp_col_stop = new_cols
+
+                                self.roi_updated.emit(
+                                    self.roi_slice.start, self.roi_slice.stop,
+                                    self.roi_x_limits[0], self.roi_x_limits[1]
+                                )
 
 
             now = time.time()
@@ -318,14 +337,17 @@ class AcquisitionManager(QObject):
                 return # Still busy
 
             if disp_col_stop > disp_col_start:
-                fit_y = full_lineout[disp_col_start:disp_col_stop]
-                fit_x = np.arange(disp_col_start, disp_col_stop)
+                # Send FULL lineout to fitter with ROI as width hint.
+                # The fitter will internally center on the detected peak,
+                # using the ROI width to determine how wide to fit.
+                # This decouples display ROI from fit centering.
+                roi_hint = (disp_col_start, disp_col_stop)
 
                 self._analysis_busy = True
                 self._last_fit_request_time = now
                 self._fit_request_id += 1
                 self._inflight_fit_id = self._fit_request_id
-                self._request_fit.emit(fit_y, fit_x, self._fit_request_id)
+                self._request_fit.emit(full_lineout, roi_hint, self._fit_request_id)
 
         except Exception as e:
             self.logger.error(f"Processing error: {e}")

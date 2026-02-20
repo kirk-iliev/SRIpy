@@ -264,7 +264,12 @@ class InterferenceFitter:
         # === Stage 4: Full Visibility Fit on Centered Region ===
         # MATLAB approach: lock baseline near envelope fit value to prevent
         # baseline/visibility parameter trading that causes instability
-        p0_final = [env_base, env_amp, env_w, center, 0.5, sine_k_ref, sine_ph_ref]
+
+        # Convert phase from absolute coordinates (Stage 3) to center-relative
+        # coordinates (Stage 4 model).  sin(k*x + φ_abs) = sin(k*(x-x0) + (φ_abs + k*x0))
+        sine_ph_centered = sine_ph_ref + sine_k_ref * center
+
+        p0_final = [env_base, env_amp, env_w, center, 0.5, sine_k_ref, sine_ph_centered]
 
         # Relax frequency tolerance to allow optimizer more freedom (30-40% instead of 10%)
         k_final_tol = 0.35 * max(sine_k_ref, 0.01)
@@ -337,25 +342,13 @@ class InterferenceFitter:
                 self.logger.warning(f"Error computing fitted curve: {e}")
                 fitted_curve = np.full_like(y, np.nan)
 
-            # === Evaluate fit over entire lineout range for display ===
-            # This ensures the fit curve shows the interference structure across
-            # the entire field of view, not just the cropped fitting region
-            try:
-                fitted_curve_full = self._full_interference_model(x_full, *popt)
-                if not all(np.isfinite(fitted_curve_full)):
-                    self.logger.warning("Full fitted curve contains non-finite values")
-                    fitted_curve_full = np.clip(fitted_curve_full, -1e10, 1e10)
-            except Exception as e:
-                self.logger.warning(f"Error computing full fitted curve: {e}")
-                fitted_curve_full = np.full_like(y_full, np.nan)
-
             return FitResult(
                 success=True,
                 visibility=vis,
                 raw_visibility=raw_vis,
                 sigma_microns=sigma * 1e6,
-                fitted_curve=fitted_curve_full,  # Use full range fit for display
-                fit_x=x_full.copy(),  # Use full x range for display
+                fitted_curve=fitted_curve,
+                fit_x=x.copy(),
                 params=params,
                 param_errors=param_errors,
                 pcov=pcov,

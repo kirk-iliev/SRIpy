@@ -17,11 +17,11 @@ This document describes:
 ## 2. Repository Structure
 
 Top-level files:
-- `/home/runner/work/SRIpy/SRIpy/main.py` — application entrypoint and global exception handling.
-- `/home/runner/work/SRIpy/SRIpy/README.md` — project introduction and usage.
-- `/home/runner/work/SRIpy/SRIpy/requirements.txt` — runtime/test dependencies.
-- `/home/runner/work/SRIpy/SRIpy/sri_config.json` — persisted runtime defaults.
-- `/home/runner/work/SRIpy/SRIpy/pytest.ini` — pytest discovery and marker configuration.
+- `main.py` — application entrypoint and global exception handling.
+- `README.md` — project introduction and usage.
+- `requirements.txt` — runtime/test dependencies.
+- `sri_config.json` — persisted runtime defaults.
+- `pytest.ini` — pytest discovery and marker configuration.
 
 Main packages:
 - `analysis/` — fitting engine and analysis worker thread object.
@@ -222,6 +222,7 @@ Outputs `FitResult` with:
   \[
   \sigma = \frac{\lambda L}{\pi d} \sqrt{0.5\ln(1/V)}
   \]
+- plain-text equivalent: `sigma = (wavelength * L / (pi * d)) * sqrt(0.5 * ln(1 / V))`
 - returns meters (converted to microns in result payload).
 
 ### Output to UI
@@ -256,7 +257,7 @@ Outputs `FitResult` with:
 
 ## 7. Module-by-Module Reference
 
-## 7.1 `analysis/`
+### 7.1 `analysis/`
 
 ### `analysis/fitter.py`
 - `FitResult` dataclass: canonical fit result schema.
@@ -274,7 +275,7 @@ Outputs `FitResult` with:
 ### `analysis/__init__.py`
 - empty package marker.
 
-## 7.2 `core/`
+### 7.2 `core/`
 
 ### `core/acquisition_manager.py`
 Central orchestration class: `AcquisitionManager(QObject)`.
@@ -307,7 +308,7 @@ Important signals:
 ### `core/config_manager.py`
 - Config defaults, loading, deep-merge, saving (detailed above).
 
-## 7.3 `hardware/`
+### 7.3 `hardware/`
 
 ### `hardware/camera_interface.py`
 - `CameraInterface(ABC)` defines contract:
@@ -333,7 +334,7 @@ Notable behavior:
   - burst thread lifecycle and cleanup,
   - resuming live after burst if needed.
 
-## 7.4 `gui/`
+### 7.4 `gui/`
 
 ### `gui/main_window.py`
 - `InterferometerView(QMainWindow)`:
@@ -373,7 +374,7 @@ Notable behavior:
 ### `gui/controllers/__init__.py`
 - empty package marker.
 
-## 7.5 `utils/`
+### 7.5 `utils/`
 
 ### `utils/image_utils.py`
 - `process_roi_lineout(...)`: shared preprocessing primitive used by live and burst paths.
@@ -382,7 +383,7 @@ Notable behavior:
 
 ## 8. Configuration and State
 
-Primary config file: `/home/runner/work/SRIpy/SRIpy/sri_config.json`.
+Primary config file: `sri_config.json`.
 
 Sections:
 - `camera`: exposure/gain/transpose/background/saturation threshold.
@@ -433,34 +434,34 @@ Safety mechanisms:
 - strict marker and warnings behavior.
 
 ### Test Files
-- `/home/runner/work/SRIpy/SRIpy/test/conftest.py`
+- `test/conftest.py`
   - reusable mock driver/fitter fixtures and synthetic data fixtures.
 
-- `/home/runner/work/SRIpy/SRIpy/test/test_fitter.py`
+- `test/test_fitter.py`
   - validates fitter parameter recovery, frequency lock behavior, noise robustness, edge cases.
 
-- `/home/runner/work/SRIpy/SRIpy/test/test_physics.py`
+- `test/test_physics.py`
   - integration-like physics consistency test for sigma recovery from synthetic data.
 
-- `/home/runner/work/SRIpy/SRIpy/test/test_integration_examples.py`
+- `test/test_integration_examples.py`
   - mock-based pipeline tests for frame→lineout→fit and basic lifecycle checks.
 
-- `/home/runner/work/SRIpy/SRIpy/test/test_config_manager.py`
+- `test/test_config_manager.py`
   - ensures no shared nested state via deep copy.
 
-- `/home/runner/work/SRIpy/SRIpy/test/test_acquisition.py`
+- `test/test_acquisition.py`
   - burst worker progress semantics and no-frame completion behavior.
 
-- `/home/runner/work/SRIpy/SRIpy/test/test_main_window.py`
+- `test/test_main_window.py`
   - logic-oriented checks for ROI/saturation/annotation/null-check expectations.
 
-- `/home/runner/work/SRIpy/SRIpy/test/test_cam.py`
+- `test/test_cam.py`
   - hardware camera listing utility-style test (requires Vimba/camera).
 
-- `/home/runner/work/SRIpy/SRIpy/test/test_driver.py`
+- `test/test_driver.py`
   - manual-style hardware visualization flow (requires camera/display).
 
-- `/home/runner/work/SRIpy/SRIpy/test/test_analysis.py`
+- `test/test_analysis.py`
   - script-like example of connect→acquire→lineout→fit→plot.
 
 ---
@@ -495,4 +496,3 @@ From `requirements.txt`:
 - Runtime assumes Vimba SDK/driver stack is installed and camera is reachable.
 - Some tests are hardware/manual-script oriented; not all tests are pure headless unit tests.
 - The code supports both live hardware and offline static-file inspection workflows.
-

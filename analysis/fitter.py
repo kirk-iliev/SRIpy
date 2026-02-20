@@ -333,13 +333,25 @@ class InterferenceFitter:
                 self.logger.warning(f"Error computing fitted curve: {e}")
                 fitted_curve = np.full_like(y, np.nan)
 
+            # === Evaluate fit over entire lineout range for display ===
+            # This ensures the fit curve shows the interference structure across
+            # the entire field of view, not just the cropped fitting region
+            try:
+                fitted_curve_full = self._full_interference_model(x_full, *popt)
+                if not all(np.isfinite(fitted_curve_full)):
+                    self.logger.warning("Full fitted curve contains non-finite values")
+                    fitted_curve_full = np.clip(fitted_curve_full, -1e10, 1e10)
+            except Exception as e:
+                self.logger.warning(f"Error computing full fitted curve: {e}")
+                fitted_curve_full = np.full_like(y_full, np.nan)
+
             return FitResult(
                 success=True,
                 visibility=vis,
                 raw_visibility=raw_vis,
                 sigma_microns=sigma * 1e6,
-                fitted_curve=fitted_curve,
-                fit_x=x.copy(),
+                fitted_curve=fitted_curve_full,  # Use full range fit for display
+                fit_x=x_full.copy(),  # Use full x range for display
                 params=params,
                 param_errors=param_errors,
                 pcov=pcov,

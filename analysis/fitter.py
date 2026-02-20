@@ -20,6 +20,8 @@ class FitResult:
     message: str = ""
     peak_idx: Optional[int] = None
     valley_idx: Optional[int] = None
+    max_intensity: float = 0.0
+    min_intensity: float = 0.0
 
 class InterferenceFitter:
     def __init__(self, wavelength: float = 550e-9, slit_separation: float = 0.05, distance: float = 16.5, min_signal: float = 50.0):
@@ -48,10 +50,13 @@ class InterferenceFitter:
 
     def _full_interference_model(self, x: np.ndarray, baseline: float, amp: float, sinc_w: float,
                                  sinc_x0: float, visibility: float, sine_freq: float, sine_phase: float) -> np.ndarray:
+        # Matches MATLAB visfit: sinc = p(2)*sin(w*x)/(w*x); sinc = sinc.*sinc;
+        # Amplitude is INSIDE the square (amp gets squared with the sinc).
         val = sinc_w * (x - sinc_x0)
         val = np.where(np.isclose(val, 0), 1e-10, val)
-        sinc_sq = amp * ((np.sin(val) / val) ** 2)
-        # Phase is relative to beam center (sinc_x0) to decouple frequency from phase shifts
+        sinc_term = amp * np.sin(val) / val
+        sinc_sq = sinc_term * sinc_term
+        # Phase relative to beam center; MATLAB uses sin(k*pts - phase)
         interf = 1 + visibility * np.sin(sine_freq * (x - sinc_x0) + sine_phase)
         return baseline + sinc_sq * interf
 
@@ -61,7 +66,7 @@ class InterferenceFitter:
         """
         Calculates simple (Imax - Imin) / (Imax + Imin) visibility.
         Finds the global peak and the lowest valley in its immediate neighborhood.
-        Returns: (visibility, peak_idx, valley_idx)
+        Returns: (visibility, peak_idx, valley_idx, i_max, i_min)
         """
         try:
             # 1. Find the Peak (Imax)
@@ -70,7 +75,7 @@ class InterferenceFitter:
             signal_range = np.max(y) - np.min(y)
             valleys, _ = find_peaks(-y, prominence=signal_range * 0.05)
             if len(valleys) == 0:
-                return 0.0, peak_idx, None
+                return 0.0, peak_idx, None, float(i_max), float(np.min(y))
 
             left_candidates = valleys[valleys < peak_idx]
             right_candidates = valleys[valleys > peak_idx]
@@ -97,12 +102,12 @@ class InterferenceFitter:
 
             denominator = i_max + i_min
             if denominator == 0:
-                return 0.0, peak_idx, valley_idx
+                return 0.0, peak_idx, valley_idx, float(i_max), float(i_min)
 
-            return (i_max - i_min) / denominator, peak_idx, valley_idx
+            return (i_max - i_min) / denominator, peak_idx, valley_idx, float(i_max), float(i_min)
 
         except Exception:
-            return 0.0, None, None
+            return 0.0, None, None, 0.0, 0.0
 
     # --- Fitting Logic ---
     def fit(self, lineout: np.ndarray, roi_hint: Optional[Tuple[int, int]] = None) -> FitResult:
@@ -140,7 +145,8 @@ class InterferenceFitter:
         signal_range = peak_val - min_val
 
         if signal_range < self.min_signal:
-            return FitResult(success=False, message="Low Signal", peak_idx=peak_idx_rough)
+            return FitResult(success=False, message="Low Signal", peak_idx=peak_idx_rough,
+                             max_intensity=float(peak_val), min_intensity=float(min_val))
 
         # === Stage 0: Gaussian on Full Data → Robust Center Finding ===
         half_max = (peak_val + min_val) / 2
@@ -201,27 +207,22 @@ class InterferenceFitter:
         x = np.arange(fit_start, fit_stop)
 
         # Raw visibility on centered region
-        raw_vis, peak_idx_local, valley_idx_local = self._calculate_raw_contrast(y)
+        raw_vis, peak_idx_local, valley_idx_local, max_int, min_int = self._calculate_raw_contrast(y)
         peak_idx_abs = (peak_idx_local + fit_start) if peak_idx_local is not None else None
         valley_idx_abs = (valley_idx_local + fit_start) if valley_idx_local is not None else None
 
         # === Stage 2: FFT on Full Lineout → Frequency Estimate ===
-        # (Like MATLAB: ffts=abs(fft(s)) on full waveform, not the crop)
+        # Matches MATLAB: ffts=abs(fft(s)); ffts=ffts(ilo:ihi); [mx,imax]=max(ffts);
+        # f=imax/length(s); w=2*pi*f;
         try:
-            y_ac = y_full - np.mean(y_full)
-            window = np.hanning(n_full)
-            yf = np.fft.rfft(y_ac * window)
-            xf = np.fft.rfftfreq(n_full)
-            fft_mag = np.abs(yf)
-
-            # Mask envelope frequencies
-            cutoff_k = 1.5 * abs(env_w) if abs(env_w) > 1e-6 else 0.01
-            cutoff_idx = int((cutoff_k * n_full) / (2 * np.pi))
-            cutoff_idx = max(5, cutoff_idx)
-            fft_mag[0:cutoff_idx] = 0
-
-            dominant_idx = int(np.argmax(fft_mag))
-            est_sine_k = float(2 * np.pi * xf[dominant_idx]) if dominant_idx > 0 else 0.3
+            ffts = np.abs(np.fft.fft(y_full))
+            ilo, ihi = 10, 200
+            ihi = min(ihi, len(ffts) // 2)  # stay in valid range
+            fft_segment = ffts[ilo:ihi]
+            imax_local = int(np.argmax(fft_segment))
+            imax = ilo + imax_local
+            f_est = imax / n_full  # cycles per pixel
+            est_sine_k = float(2 * np.pi * f_est)
         except Exception as e:
             self.logger.debug(f"FFT frequency estimate fallback: {e}")
             est_sine_k = 0.3
@@ -269,7 +270,12 @@ class InterferenceFitter:
         # coordinates (Stage 4 model).  sin(k*x + φ_abs) = sin(k*(x-x0) + (φ_abs + k*x0))
         sine_ph_centered = sine_ph_ref + sine_k_ref * center
 
-        p0_final = [env_base, env_amp, env_w, center, 0.5, sine_k_ref, sine_ph_centered]
+        # MATLAB convention: visfit amplitude is INSIDE the square.
+        # p0(2)=sqrt(p1(2)) converts from sinc2fit (amp outside) to visfit (amp inside)
+        env_amp_sqrt = float(np.sqrt(max(env_amp, 0)))
+
+        # MATLAB: baseline is locked to SincOffset from envelope fit, not re-fitted
+        p0_final = [env_base, env_amp_sqrt, env_w, center, 0.5, sine_k_ref, sine_ph_centered]
 
         # Relax frequency tolerance to allow optimizer more freedom (30-40% instead of 10%)
         k_final_tol = 0.35 * max(sine_k_ref, 0.01)
@@ -303,7 +309,8 @@ class InterferenceFitter:
 
             if not all(np.isfinite(popt)):
                 return FitResult(success=False, message="Fit converged but produced non-finite parameters",
-                                 peak_idx=peak_idx_abs, valley_idx=valley_idx_abs)
+                                 peak_idx=peak_idx_abs, valley_idx=valley_idx_abs,
+                                 max_intensity=max_int, min_intensity=min_int)
 
             vis = float(np.clip(popt[4], 0.0, 1.0))
             sigma = self.calculate_sigma(vis)
@@ -353,19 +360,24 @@ class InterferenceFitter:
                 param_errors=param_errors,
                 pcov=pcov,
                 peak_idx=peak_idx_abs,
-                valley_idx=valley_idx_abs
+                valley_idx=valley_idx_abs,
+                max_intensity=max_int,
+                min_intensity=min_int
             )
 
         except RuntimeError as e:
             return FitResult(success=False, message=f"Fit Failed (convergence): {str(e)[:100]}",
-                             peak_idx=peak_idx_abs, valley_idx=valley_idx_abs)
+                             peak_idx=peak_idx_abs, valley_idx=valley_idx_abs,
+                             max_intensity=max_int, min_intensity=min_int)
         except ValueError as e:
             return FitResult(success=False, message=f"Fit Failed (invalid data): {str(e)[:100]}",
-                             peak_idx=peak_idx_abs, valley_idx=valley_idx_abs)
+                             peak_idx=peak_idx_abs, valley_idx=valley_idx_abs,
+                             max_intensity=max_int, min_intensity=min_int)
         except Exception as e:
             self.logger.error(f"Unexpected fit error: {e}", exc_info=True)
             return FitResult(success=False, message=f"Fit Failed (unexpected): {str(type(e).__name__)[:50]}",
-                             peak_idx=peak_idx_abs, valley_idx=valley_idx_abs)
+                             peak_idx=peak_idx_abs, valley_idx=valley_idx_abs,
+                             max_intensity=max_int, min_intensity=min_int)
 
 
     def calculate_sigma(self, visibility: float) -> float:

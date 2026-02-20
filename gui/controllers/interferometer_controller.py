@@ -256,7 +256,36 @@ class InterferometerController(QObject):
         # BurstResult has mean_raw_visibility (average across all frames in burst)
         raw_vis_display = res.mean_raw_visibility if hasattr(res, 'mean_raw_visibility') else 0.0
         self.view.controls.lbl_raw_vis.setText(f"Raw Visibility: {raw_vis_display:.3f}")
-        QMessageBox.information(self.view, "Burst Done", f"Mean Sigma: {res.mean_sigma:.2f} um")
+
+        # Display max and min intensity if available
+        if hasattr(res, 'mean_max_intensity') and hasattr(res, 'mean_min_intensity'):
+            self.view.controls.lbl_intensity.setText(f"Max: {res.mean_max_intensity:.0f} | Min: {res.mean_min_intensity:.0f}")
+
+        # Build detailed burst results message
+        message = f"""
+Burst Acquisition Results:
+
+Beam Size:
+  Sigma: {res.mean_sigma:.2f} ± {res.std_sigma:.2f} µm
+
+Visibility:
+  Visibility: {res.mean_visibility:.3f}
+  Raw Visibility: {res.mean_raw_visibility:.3f}
+
+Intensity:
+  Max: {res.mean_max_intensity:.0f}
+  Min: {res.mean_min_intensity:.0f}
+
+Acquisition:
+  Frames Captured: {res.n_frames}
+
+Physics Parameters:
+  Wavelength: {self.model.fitter.wavelength * 1e9:.1f} nm
+  Slit Separation: {self.model.fitter.slit_sep * 1e3:.2f} mm
+  Distance: {self.model.fitter.distance:.2f} m
+""".strip()
+
+        QMessageBox.information(self.view, "Burst Done", message)
 
     def _handle_burst_error(self, msg):
         self.view.controls.progress_bar.setVisible(False)
@@ -315,6 +344,7 @@ class InterferometerController(QObject):
         self.view.controls.lbl_vis.setText(f"{res.visibility:.3f}")
         self.view.controls.lbl_sigma.setText(f"{res.sigma_microns:.1f} um")
         self.view.controls.lbl_raw_vis.setText(f"Raw Visibility: {res.raw_visibility:.3f}")
+        self.view.controls.lbl_intensity.setText(f"Max: {res.max_intensity:.0f} | Min: {res.min_intensity:.0f}")
 
         # Update Status Label (The Fix)
         is_saturated = self.model.last_saturated
@@ -405,7 +435,10 @@ class InterferometerController(QObject):
 
         res = ExperimentResult(
             visibility=self.model.last_fit_result.visibility,
+            raw_visibility=self.model.last_fit_result.raw_visibility,
             sigma_microns=self.model.last_fit_result.sigma_microns,
+            max_intensity=self.model.last_fit_result.max_intensity,
+            min_intensity=self.model.last_fit_result.min_intensity,
             lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else (self.model.last_lineout if self.model.last_lineout is not None else []),
             fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else (self.model.last_fit_result.fitted_curve if isinstance(self.model.last_fit_result.fitted_curve, list) else []),
             is_saturated=self.model.last_saturated
@@ -431,7 +464,10 @@ class InterferometerController(QObject):
 
         res = ExperimentResult(
             visibility=self.model.last_fit_result.visibility,
+            raw_visibility=self.model.last_fit_result.raw_visibility,
             sigma_microns=self.model.last_fit_result.sigma_microns,
+            max_intensity=self.model.last_fit_result.max_intensity,
+            min_intensity=self.model.last_fit_result.min_intensity,
             lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else (self.model.last_lineout if self.model.last_lineout is not None else []),
             fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else (self.model.last_fit_result.fitted_curve if isinstance(self.model.last_fit_result.fitted_curve, list) else []),
             is_saturated=self.model.last_saturated

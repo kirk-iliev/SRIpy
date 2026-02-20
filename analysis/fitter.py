@@ -51,7 +51,8 @@ class InterferenceFitter:
         val = sinc_w * (x - sinc_x0)
         val = np.where(np.isclose(val, 0), 1e-10, val)
         sinc_sq = amp * ((np.sin(val) / val) ** 2)
-        interf = 1 + visibility * np.sin(sine_freq * x + sine_phase)
+        # Phase is relative to beam center (sinc_x0) to decouple frequency from phase shifts
+        interf = 1 + visibility * np.sin(sine_freq * (x - sinc_x0) + sine_phase)
         return baseline + sinc_sq * interf
 
 
@@ -230,7 +231,9 @@ class InterferenceFitter:
 
         # === Stage 3: Sine Fit on Narrow Region Around Center ===
         # (Like MATLAB: npts=50 for sinusoid fitting around the found peak)
-        npts_sine = 50
+        # Dynamically scale window to capture ~3 full fringes based on FFT estimate
+        estimated_fringe_width_pixels = (2 * np.pi) / est_sine_k if est_sine_k > 0 else 50
+        npts_sine = int(max(50, 1.5 * estimated_fringe_width_pixels))
         sine_start = max(fit_start, center_idx - npts_sine)
         sine_stop = min(fit_stop, center_idx + npts_sine)
 
@@ -263,7 +266,8 @@ class InterferenceFitter:
         # baseline/visibility parameter trading that causes instability
         p0_final = [env_base, env_amp, env_w, center, 0.5, sine_k_ref, sine_ph_ref]
 
-        k_final_tol = 0.1 * max(sine_k_ref, 0.01)
+        # Relax frequency tolerance to allow optimizer more freedom (30-40% instead of 10%)
+        k_final_tol = 0.35 * max(sine_k_ref, 0.01)
         base_tol = max(abs(env_base) * 0.5, 20.0)
         center_tol = 30.0
 
@@ -274,7 +278,7 @@ class InterferenceFitter:
             max(float(fit_start), center - center_tol),  # center (tight)
             0.0,                                         # visibility
             max(0.001, sine_k_ref - k_final_tol),        # sine_k
-            -np.pi                                       # sine_phase
+            -np.inf                                      # sine_phase (unbounded to avoid walls)
         ]
         bounds_max = [
             env_base + base_tol,
@@ -283,7 +287,7 @@ class InterferenceFitter:
             min(float(fit_stop), center + center_tol),
             1.0,
             sine_k_ref + k_final_tol,
-            np.pi
+            np.inf                                       # sine_phase (unbounded to avoid walls)
         ]
 
         try:

@@ -25,3 +25,7 @@ wheels/
 venv/
 .venv/
 env/
+
+/findLSmin.m
+/intdisplay_sinc2.m
+/LMGauss_fit.m

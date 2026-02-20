@@ -14,7 +14,7 @@ class InterferometerController(QObject):
         self._suppress_roi_sync = False
         self._user_is_dragging = False  # Track user interaction state
         self._display_throttle_ms = 0
-        self._last_display_update = 0
+        self._last_display_time = 0
 
         self.view.controls.display_throttle_changed.connect(self._set_display_throttle)
 
@@ -131,11 +131,7 @@ class InterferometerController(QObject):
             return
         rows = self.view.live_widget.get_roi_rows()
         width = self.view.live_widget.get_roi_width()
-        if self.view.controls.chk_transpose.isChecked():
-            # Display rows map to original columns; display width maps to original rows
-            self.model.set_roi(width[0], width[1], rows[0], rows[1])
-        else:
-            self.model.set_roi(rows[0], rows[1], width[0], width[1])
+        self.model.set_roi(rows[0], rows[1], width[0], width[1])
 
     def _reset_roi(self):
         """Reset ROI to default values and DISABLE autocenter."""
@@ -260,7 +256,36 @@ class InterferometerController(QObject):
         # BurstResult has mean_raw_visibility (average across all frames in burst)
         raw_vis_display = res.mean_raw_visibility if hasattr(res, 'mean_raw_visibility') else 0.0
         self.view.controls.lbl_raw_vis.setText(f"Raw Visibility: {raw_vis_display:.3f}")
-        QMessageBox.information(self.view, "Burst Done", f"Mean Sigma: {res.mean_sigma:.2f} um")
+
+        # Display max and min intensity if available
+        if hasattr(res, 'mean_max_intensity') and hasattr(res, 'mean_min_intensity'):
+            self.view.controls.lbl_intensity.setText(f"Max: {res.mean_max_intensity:.0f} | Min: {res.mean_min_intensity:.0f}")
+
+        # Build detailed burst results message
+        message = f"""
+Burst Acquisition Results:
+
+Beam Size:
+  Sigma: {res.mean_sigma:.2f} ± {res.std_sigma:.2f} µm
+
+Visibility:
+  Visibility: {res.mean_visibility:.3f}
+  Raw Visibility: {res.mean_raw_visibility:.3f}
+
+Intensity:
+  Max: {res.mean_max_intensity:.0f}
+  Min: {res.mean_min_intensity:.0f}
+
+Acquisition:
+  Frames Captured: {res.n_frames}
+
+Physics Parameters:
+  Wavelength: {self.model.fitter.wavelength * 1e9:.1f} nm
+  Slit Separation: {self.model.fitter.slit_sep * 1e3:.2f} mm
+  Distance: {self.model.fitter.distance:.2f} m
+""".strip()
+
+        QMessageBox.information(self.view, "Burst Done", message)
 
     def _handle_burst_error(self, msg):
         self.view.controls.progress_bar.setVisible(False)
@@ -319,6 +344,7 @@ class InterferometerController(QObject):
         self.view.controls.lbl_vis.setText(f"{res.visibility:.3f}")
         self.view.controls.lbl_sigma.setText(f"{res.sigma_microns:.1f} um")
         self.view.controls.lbl_raw_vis.setText(f"Raw Visibility: {res.raw_visibility:.3f}")
+        self.view.controls.lbl_intensity.setText(f"Max: {res.max_intensity:.0f} | Min: {res.min_intensity:.0f}")
 
         # Update Status Label (The Fix)
         is_saturated = self.model.last_saturated
@@ -368,12 +394,17 @@ class InterferometerController(QObject):
 
     def _handle_transpose_toggled(self, checked: bool):
         self.model.set_transpose(checked)
-        # Refresh ROI display to match orientation
+
+        # ONE-TIME JUMP: When transpose is toggled, swap the UI boxes
+        # so they visually rotate with the beam on the screen.
+        old_rows = self.view.live_widget.get_roi_rows()
+        old_width = self.view.live_widget.get_roi_width()
+
         self._apply_model_roi(
-            self.model.roi_slice.start,
-            self.model.roi_slice.stop,
-            self.model.roi_x_limits[0],
-            self.model.roi_x_limits[1],
+            y_min=old_width[0],
+            y_max=old_width[1],
+            x_min=old_rows[0],
+            x_max=old_rows[1]
         )
 
     def _apply_model_roi(self, y_min, y_max, x_min, x_max):
@@ -382,13 +413,10 @@ class InterferometerController(QObject):
 
         self._suppress_roi_sync = True
         try:
-            if self.view.controls.chk_transpose.isChecked():
-                # Display rows map to original columns; display width maps to original rows
-                self.view.live_widget.set_roi_rows(x_min, x_max)
-                self.view.live_widget.set_roi_width(y_min, y_max)
-            else:
-                self.view.live_widget.set_roi_rows(y_min, y_max)
-                self.view.live_widget.set_roi_width(x_min, x_max)
+            # Always map roi_slice to display rows, roi_x_limits to display width
+            # The image transpose handles coordinate swapping automatically
+            self.view.live_widget.set_roi_rows(y_min, y_max)
+            self.view.live_widget.set_roi_width(x_min, x_max)
         finally:
             self._suppress_roi_sync = False
 
@@ -407,7 +435,10 @@ class InterferometerController(QObject):
 
         res = ExperimentResult(
             visibility=self.model.last_fit_result.visibility,
+            raw_visibility=self.model.last_fit_result.raw_visibility,
             sigma_microns=self.model.last_fit_result.sigma_microns,
+            max_intensity=self.model.last_fit_result.max_intensity,
+            min_intensity=self.model.last_fit_result.min_intensity,
             lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else (self.model.last_lineout if self.model.last_lineout is not None else []),
             fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else (self.model.last_fit_result.fitted_curve if isinstance(self.model.last_fit_result.fitted_curve, list) else []),
             is_saturated=self.model.last_saturated
@@ -433,7 +464,10 @@ class InterferometerController(QObject):
 
         res = ExperimentResult(
             visibility=self.model.last_fit_result.visibility,
+            raw_visibility=self.model.last_fit_result.raw_visibility,
             sigma_microns=self.model.last_fit_result.sigma_microns,
+            max_intensity=self.model.last_fit_result.max_intensity,
+            min_intensity=self.model.last_fit_result.min_intensity,
             lineout_y=self.model.last_lineout.tolist() if isinstance(self.model.last_lineout, np.ndarray) else (self.model.last_lineout if self.model.last_lineout is not None else []),
             fit_y=self.model.last_fit_result.fitted_curve.tolist() if hasattr(self.model.last_fit_result, 'fitted_curve') and isinstance(self.model.last_fit_result.fitted_curve, np.ndarray) else (self.model.last_fit_result.fitted_curve if isinstance(self.model.last_fit_result.fitted_curve, list) else []),
             is_saturated=self.model.last_saturated
@@ -472,14 +506,9 @@ class InterferometerController(QObject):
 
     def _save_current_config(self):
         """Scrape UI settings and save to disk via ConfigManager."""
-        rows = self.view.live_widget.get_roi_rows()
-        width = self.view.live_widget.get_roi_width()
-        if self.view.controls.chk_transpose.isChecked():
-            rows_min, rows_max = width[0], width[1]
-            fit_width_min, fit_width_max = rows[0], rows[1]
-        else:
-            rows_min, rows_max = rows[0], rows[1]
-            fit_width_min, fit_width_max = width[0], width[1]
+        rows_min = int(self.model.roi_slice.start)
+        rows_max = int(self.model.roi_slice.stop)
+        fit_width_min, fit_width_max = self.model.roi_x_limits
 
         ui_config = copy.deepcopy(self.model.cfg)
 

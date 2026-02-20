@@ -65,7 +65,7 @@ class BurstWorker(QObject):
                 x_stop = int(self.roi_x_map[1])
                 x_start = max(0, min(x_start, len(full_lineout)))
                 x_stop = max(x_start, min(x_stop, len(full_lineout)))
-                
+
                 raw_lineouts.append(np.nan_to_num(full_lineout[x_start:x_stop]))
                 timestamps.append(ts)
 
@@ -77,6 +77,8 @@ class BurstWorker(QObject):
             sigma_list = []
             total_captured = len(raw_lineouts)
             raw_vis_list = []
+            max_int_list = []
+            min_int_list = []
 
             if total_captured == 0:
                 self.progress.emit(100)
@@ -85,15 +87,19 @@ class BurstWorker(QObject):
 
             for i, y_data in enumerate(raw_lineouts):
                 res = self.fitter.fit(y_data)
-                
+
                 if res.success:
                     vis_list.append(res.visibility)
                     sigma_list.append(res.sigma_microns)
                     raw_vis_list.append(res.raw_visibility)
+                    max_int_list.append(res.max_intensity)
+                    min_int_list.append(res.min_intensity)
                 else:
                     vis_list.append(0.0)
                     sigma_list.append(0.0)
                     raw_vis_list.append(0.0)
+                    max_int_list.append(0.0)
+                    min_int_list.append(0.0)
 
                 pct = 50 + int(((i + 1) / total_captured) * 50)
                 self.progress.emit(max(50, min(100, pct)))
@@ -108,7 +114,9 @@ class BurstWorker(QObject):
                 sigma_history=sigma_list,
                 timestamps=timestamps,
                 lineout_history=raw_lineouts,
-                mean_raw_visibility=float(np.mean(raw_vis_list)) if raw_vis_list else 0.0
+                mean_raw_visibility=float(np.mean(raw_vis_list)) if raw_vis_list else 0.0,
+                mean_max_intensity=float(np.mean(max_int_list)) if max_int_list else 0.0,
+                mean_min_intensity=float(np.mean(min_int_list)) if min_int_list else 0.0
             )
             self.finished.emit(burst_res)
 

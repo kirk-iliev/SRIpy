@@ -4,21 +4,24 @@ Acquisition Manager - Central model coordinating camera, ROI, and analysis.
 
 Coordinate System Notes:
 ------------------------
-The ROI is stored in ORIGINAL (camera-native) coordinates, even when transpose
-is enabled. This ensures configuration is saved/loaded consistently regardless
-of the current transpose state.
+The ROI is stored in ORIGINAL (camera-native) coordinates, independent of
+transpose state. This ensures configuration remains consistent when saving/loading.
 
-- `roi_slice`: Rows in the **original** image (vertical strip before transpose)
-- `roi_x_limits`: Columns in the **original** image (horizontal range before transpose)
+- `roi_slice`: Rows in the original image (defines vertical binning region)
+- `roi_x_limits`: Columns in the original image (defines horizontal fit region)
 
-When `transpose_enabled=True`, the display image is `img.T`, so:
-- Original rows become display columns
-- Original columns become display rows
+UI Coordinate Mapping (InterferometerController):
+- Display vertical ROI box → always maps to `roi_slice` (ui rows to model rows)
+- Display horizontal ROI box → always maps to `roi_x_limits` (ui width to model x_limits)
+- When transpose is toggled, UI boxes perform ONE-TIME swap to visually track the beam
 
-The `_process_live_frame()` method maps between these coordinate systems:
-1. Load original coords from `roi_slice` / `roi_x_limits`
-2. Swap to display-space for visual operations
-3. Map back to original coords when storing updates
+Image Processing (process_roi_lineout in image_utils.py):
+- When transpose=False: crops rows using roi_slice, integrates horizontally → lineout length = image width
+- When transpose=True: crops columns using roi_slice, integrates vertically → lineout length = image height
+- The display image automatically transposes (img.T), so visual axes swap without controller logic
+- Fit region indices in roi_x_limits directly index the resulting lineout coordinates
+
+Result: Clean 1:1 mapping throughout. No coordinate swapping in controller or model.
 """
 import logging
 import time
@@ -289,20 +292,39 @@ class AcquisitionManager(QObject):
                     peak_idx = np.argmax(full_lineout)
 
                     if full_lineout[peak_idx] > self._autocenter_min_signal:
-                        current_w = disp_col_stop - disp_col_start
-                        new_min = max(0, peak_idx - current_w // 2)
-                        new_max = min(w, new_min + current_w)
+                        if self.transpose_enabled:
+                            # When transpose=True: lineout is vertical integration (rows)
+                            # peak_idx indexes rows; should update roi_slice (row range)
+                            current_h = self.roi_slice.stop - self.roi_slice.start
+                            new_min = max(0, peak_idx - current_h // 2)
+                            new_max = min(h, new_min + current_h)
 
-                        new_cols = (int(new_min), int(new_max))
+                            new_rows = slice(int(new_min), int(new_max))
 
-                        if new_cols != self.roi_x_limits:
-                            self.roi_x_limits = new_cols
-                            disp_col_start, disp_col_stop = new_cols
+                            if new_rows != self.roi_slice:
+                                self.roi_slice = new_rows
 
-                            self.roi_updated.emit(
-                                self.roi_slice.start, self.roi_slice.stop,
-                                self.roi_x_limits[0], self.roi_x_limits[1]
-                            )
+                                self.roi_updated.emit(
+                                    self.roi_slice.start, self.roi_slice.stop,
+                                    self.roi_x_limits[0], self.roi_x_limits[1]
+                                )
+                        else:
+                            # When transpose=False: lineout is horizontal integration (columns)
+                            # peak_idx indexes columns; should update roi_x_limits (column range)
+                            current_w = disp_col_stop - disp_col_start
+                            new_min = max(0, peak_idx - current_w // 2)
+                            new_max = min(w, new_min + current_w)
+
+                            new_cols = (int(new_min), int(new_max))
+
+                            if new_cols != self.roi_x_limits:
+                                self.roi_x_limits = new_cols
+                                disp_col_start, disp_col_stop = new_cols
+
+                                self.roi_updated.emit(
+                                    self.roi_slice.start, self.roi_slice.stop,
+                                    self.roi_x_limits[0], self.roi_x_limits[1]
+                                )
 
 
             now = time.time()
@@ -315,14 +337,17 @@ class AcquisitionManager(QObject):
                 return # Still busy
 
             if disp_col_stop > disp_col_start:
-                fit_y = full_lineout[disp_col_start:disp_col_stop]
-                fit_x = np.arange(disp_col_start, disp_col_stop)
+                # Send FULL lineout to fitter with ROI as width hint.
+                # The fitter will internally center on the detected peak,
+                # using the ROI width to determine how wide to fit.
+                # This decouples display ROI from fit centering.
+                roi_hint = (disp_col_start, disp_col_stop)
 
                 self._analysis_busy = True
                 self._last_fit_request_time = now
                 self._fit_request_id += 1
                 self._inflight_fit_id = self._fit_request_id
-                self._request_fit.emit(fit_y, fit_x, self._fit_request_id)
+                self._request_fit.emit(full_lineout, roi_hint, self._fit_request_id)
 
         except Exception as e:
             self.logger.error(f"Processing error: {e}")

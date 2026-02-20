@@ -50,13 +50,13 @@ class InterferenceFitter:
 
     def _full_interference_model(self, x: np.ndarray, baseline: float, amp: float, sinc_w: float,
                                  sinc_x0: float, visibility: float, sine_freq: float, sine_phase: float) -> np.ndarray:
-        # Matches MATLAB visfit: sinc = p(2)*sin(w*x)/(w*x); sinc = sinc.*sinc;
+        # Sinc model computation: amplitude is squared
         # Amplitude is INSIDE the square (amp gets squared with the sinc).
         val = sinc_w * (x - sinc_x0)
         val = np.where(np.isclose(val, 0), 1e-10, val)
         sinc_term = amp * np.sin(val) / val
         sinc_sq = sinc_term * sinc_term
-        # Phase relative to beam center; MATLAB uses sin(k*pts - phase)
+        # Phase relative to beam center
         interf = 1 + visibility * np.sin(sine_freq * (x - sinc_x0) + sine_phase)
         return baseline + sinc_sq * interf
 
@@ -114,10 +114,10 @@ class InterferenceFitter:
         """
         Fit interference pattern using multi-stage approach.
 
-        Follows the MATLAB intdisplay_sinc2 strategy:
-          0. Gaussian fit on FULL data → robust center finding
-          1. Sinc² envelope fit on FULL data → baseline + envelope params
-          2. FFT on FULL data → fringe frequency estimate
+        Stages:
+          0. Gaussian fit on full data → robust center finding
+          1. Sinc² envelope fit on full data → baseline + envelope params
+          2. FFT on full data → fringe frequency estimate
           3. Sine fit on narrow region around center → phase/freq refinement
           4. Full model fit on centered region → visibility extraction
 
@@ -169,7 +169,7 @@ class InterferenceFitter:
             width_guess = est_width
 
         # === Stage 1: Sinc² Envelope on Full Data → Lock Baseline ===
-        # (Like MATLAB: fits sinc² to entire IMG.IntPattern before cropping)
+        # Fit sinc² envelope to full data before cropping
         est_sinc_w = 2.0 / max(width_guess * 2, 1.0)
         p0_env = [min_val, signal_range, est_sinc_w, center_guess]
 
@@ -212,8 +212,7 @@ class InterferenceFitter:
         valley_idx_abs = (valley_idx_local + fit_start) if valley_idx_local is not None else None
 
         # === Stage 2: FFT on Full Lineout → Frequency Estimate ===
-        # Matches MATLAB: ffts=abs(fft(s)); ffts=ffts(ilo:ihi); [mx,imax]=max(ffts);
-        # f=imax/length(s); w=2*pi*f;
+        # FFT frequency estimation from peak in segment
         try:
             ffts = np.abs(np.fft.fft(y_full))
             ilo, ihi = 10, 200
@@ -231,7 +230,7 @@ class InterferenceFitter:
             est_sine_k = 0.3
 
         # === Stage 3: Sine Fit on Narrow Region Around Center ===
-        # (Like MATLAB: npts=50 for sinusoid fitting around the found peak)
+        # Sinusoid fitting around beam center
         # Dynamically scale window to capture ~3 full fringes based on FFT estimate
         estimated_fringe_width_pixels = (2 * np.pi) / est_sine_k if est_sine_k > 0 else 50
         npts_sine = int(max(50, 1.5 * estimated_fringe_width_pixels))
@@ -263,18 +262,18 @@ class InterferenceFitter:
             self.logger.debug(f"Sine fit refinement fallback: {e}")
 
         # === Stage 4: Full Visibility Fit on Centered Region ===
-        # MATLAB approach: lock baseline near envelope fit value to prevent
+        # Lock baseline near envelope fit value to prevent
         # baseline/visibility parameter trading that causes instability
 
         # Convert phase from absolute coordinates (Stage 3) to center-relative
         # coordinates (Stage 4 model).  sin(k*x + φ_abs) = sin(k*(x-x0) + (φ_abs + k*x0))
         sine_ph_centered = sine_ph_ref + sine_k_ref * center
 
-        # MATLAB convention: visfit amplitude is INSIDE the square.
-        # p0(2)=sqrt(p1(2)) converts from sinc2fit (amp outside) to visfit (amp inside)
+        # Model: amplitude is INSIDE the square.
+        # p0(2)=sqrt(p1(2)) converts from sinc2fit (amp outside) to model (amp inside)
         env_amp_sqrt = float(np.sqrt(max(env_amp, 0)))
 
-        # MATLAB: baseline is locked to SincOffset from envelope fit, not re-fitted
+        # Baseline locked to envelope fit value, not re-fitted
         p0_final = [env_base, env_amp_sqrt, env_w, center, 0.5, sine_k_ref, sine_ph_centered]
 
         # Relax frequency tolerance to allow optimizer more freedom (30-40% instead of 10%)

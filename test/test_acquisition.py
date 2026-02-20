@@ -56,21 +56,15 @@ def test_progress_with_dropped_frames():
 
     worker.run_burst()
 
-    # There should be some progress updates and we must end at 100
     assert progress_updates, "No progress updates emitted"
     assert progress_updates[-1] == 100, f"Final progress not 100: {progress_updates}"
-
-    # Progress should be non-decreasing
     assert all(earlier <= later for earlier, later in zip(progress_updates, progress_updates[1:])), "Progress decreased at some point"
 
-    # Verify results: we captured exactly 3 frames (non-None entries)
     result = result_container.get('res')
     assert result is not None
     assert len(result.lineout_history) == 3
     assert result.n_frames == len(sequence)
-
-    # Ensure we emitted progress values that cross the 50% threshold (processing phase)
-    assert any(v >= 50 for v in progress_updates), "No processing progress emitted (<50)"
+    assert any(v >= 50 for v in progress_updates), "No processing progress emitted"
 
 
 def test_no_frames_captured_emits_immediate_100():
@@ -85,5 +79,4 @@ def test_no_frames_captured_emits_immediate_100():
 
     worker.run_burst()
 
-    # When no frames captured, progress should immediately report completion (100)
     assert progress_updates == [100] or (progress_updates and progress_updates[-1] == 100)

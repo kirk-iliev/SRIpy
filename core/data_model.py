@@ -52,8 +52,6 @@ class BurstResult:
     vis_history: list = field(default_factory=list)
     sigma_history: list = field(default_factory=list)
     timestamps: list = field(default_factory=list)
-
-    # This allows you to 'replay' the burst later
     lineout_history: list = field(default_factory=list)
 
 class DataManager:

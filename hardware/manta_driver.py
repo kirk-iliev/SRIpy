@@ -6,13 +6,12 @@ from typing import Optional
 from vmbpy import (
     VmbSystem,
     Camera,
-    Stream,
     Frame,
     FrameStatus,
     VmbCameraError,
     VmbFeatureError,
 )
-from typing import Any, cast
+from typing import cast
 from hardware.camera_interface import CameraInterface
 
 class MantaDriver(CameraInterface):
@@ -87,7 +86,7 @@ class MantaDriver(CameraInterface):
             return
 
         # Optimize Packet Size
-        for feature_name in ["GevSCPSPacketSize", "PacketSize"]: 
+        for feature_name in ["GevSCPSPacketSize", "PacketSize"]:
             feat = self._get_feature(feature_name)
             if feat:
                 try:
@@ -179,7 +178,7 @@ class MantaDriver(CameraInterface):
                     self._frame_queue.unfinished_tasks = 0
 
                 # Define the handler inside to capture 'self'
-                def frame_handler(cam: Camera, stream: Stream, frame: Frame):
+                def frame_handler(cam: Camera, frame: Frame):
                     # Check shutdown flag under lock to prevent race condition
                     with self._stream_lock:
                         accepting = self._accepting_frames
@@ -255,162 +254,58 @@ class MantaDriver(CameraInterface):
 
     def acquire_frame(self, timeout: float = 3.0) -> Optional[np.ndarray]:
         """
-        Acquires a single frame.
-        If start_stream() was called, pulls from the live queue.
-        If not, performs a one-off capture (snapshot mode).
-
-        Returns:
-            numpy.ndarray: Image data if successful
-            None: Only on timeout (not on other errors)
-
-        Raises:
-            RuntimeError: Camera not connected
-            Exception: Vimba errors, hardware issues (logged with context)
-        """
-        if not self._cam:
-            raise RuntimeError("Camera not connected.")
-
-        # --- MODE A: Streaming ---
-        # Check streaming state under lock to avoid race conditions
-        with self._stream_lock:
-            is_streaming = self._is_streaming
-
-        if is_streaming:
-            try:
-                # Fire Software Trigger
-                if self._feat_trigger_software:
-                    try:
-                        self._feat_trigger_software.run()  # type: ignore
-                    except Exception as e:
-                        self.logger.warning(f"Trigger failed: {e}", exc_info=True)
-                        # Continue anyway; frame might already be in queue
-
-                # Wait for result in queue
-                frame = self._frame_queue.get(block=True, timeout=timeout)
-
-                if frame is None:
-                    self.logger.debug(f"Acquire returned None frame (stream stopped)")
-                    return None
-                return frame
-
-            except queue.Empty:
-                # Timeout is expected in some conditions; return None without logging as error
-                self.logger.debug(f"Acquire timeout after {timeout}s (Streaming mode)")
-                return None
-
-            except Exception as e:
-                # Other exceptions are NOT expected; log with full context
-                self.logger.error(
-                    f"Unexpected error acquiring frame from streaming queue: {type(e).__name__}: {e}",
-                    exc_info=True
-                )
-                raise  # Re-raise so caller knows something went wrong
-
-        # --- MODE B: Snapshot ---
-        else:
-            try:
-                return self._acquire_single_snapshot(timeout)
-            except Exception as e:
-                # Exception already logged in snapshot method
-                raise
-
-    def _acquire_single_snapshot(self, timeout: float) -> Optional[np.ndarray]:
-        """
-        Legacy helper for one-off snapshots (non-streaming mode).
+        Acquires a single frame from the streaming queue.
+        Requires start_stream() to be called first.
 
         Args:
             timeout: Seconds to wait for frame
 
         Returns:
             numpy.ndarray: Image data if successful
-            None: On timeout only
+            None: On timeout
 
         Raises:
-            VmbCameraError, VmbFeatureError: Vimba errors (logged)
+            RuntimeError: Camera not connected or streaming not started
+            Exception: Vimba errors, hardware issues (logged with context)
         """
-        q: queue.Queue = queue.Queue(maxsize=1)
+        if not self._cam:
+            raise RuntimeError("Camera not connected.")
 
-        def handler(cam, stream, frame):
-            """Frame callback for snapshot acquisition."""
-            try:
-                if frame.get_status() == FrameStatus.Complete:
-                    # Copy data immediately; frame is recycled after callback
-                    img_data = frame.as_numpy_ndarray().copy()
-                    try:
-                        q.put(img_data, block=False)  # Non-blocking; queue is size 1
-                    except queue.Full:
-                        self.logger.debug("Snapshot queue full; dropping frame")
-                else:
-                    status = frame.get_status()
-                    self.logger.warning(f"Frame incomplete with status: {status}")
-            except Exception as e:
-                self.logger.error(
-                    f"Error in snapshot frame handler: {type(e).__name__}: {e}",
-                    exc_info=True
-                )
-            finally:
-                # Always re-queue frame to camera to prevent buffer starvation
-                try:
-                    cam.queue_frame(frame)
-                except Exception as e:
-                    self.logger.debug(f"Failed to re-queue frame in handler: {e}")
+        # Check streaming state under lock to avoid race conditions
+        with self._stream_lock:
+            is_streaming = self._is_streaming
+
+        if not is_streaming:
+            raise RuntimeError("Streaming not started. Call start_stream() first.")
 
         try:
-            # Start streaming for single frame capture
-            self._cam.start_streaming(handler=handler, buffer_count=1)  # type: ignore
-
-            # Trigger capture
+            # Fire Software Trigger
             if self._feat_trigger_software:
                 try:
                     self._feat_trigger_software.run()  # type: ignore
                 except Exception as e:
-                    self.logger.warning(
-                        f"Software trigger failed in snapshot mode: {type(e).__name__}: {e}",
-                        exc_info=True
-                    )
-                    # Continue anyway; frame might arrive from auto-triggering
+                    self.logger.warning(f"Trigger failed: {e}", exc_info=True)
+                    # Continue anyway; frame might already be in queue
 
-            # Wait for frame with timeout
-            try:
-                frame_data = q.get(block=True, timeout=timeout)
-                self.logger.debug(f"Snapshot acquired successfully ({frame_data.shape})")
-                return frame_data
+            # Wait for result in queue
+            frame = self._frame_queue.get(block=True, timeout=timeout)
 
-            except queue.Empty:
-                self.logger.debug(f"Snapshot timeout after {timeout}s")
+            if frame is None:
+                self.logger.debug(f"Acquire returned None frame (stream stopped)")
                 return None
+            return frame
 
-        except VmbCameraError as e:
-            self.logger.error(
-                f"Vimba camera error during snapshot: {type(e).__name__}: {e}",
-                exc_info=True
-            )
-            raise
-        except VmbFeatureError as e:
-            self.logger.error(
-                f"Vimba feature error during snapshot: {type(e).__name__}: {e}",
-                exc_info=True
-            )
-            raise
+        except queue.Empty:
+            self.logger.debug(f"Acquire timeout after {timeout}s")
+            return None
+
         except Exception as e:
             self.logger.error(
-                f"Unexpected error during snapshot acquisition: {type(e).__name__}: {e}",
+                f"Unexpected error acquiring frame: {type(e).__name__}: {e}",
                 exc_info=True
             )
             raise
-        finally:
-            # Stop streaming and handle cleanup errors explicitly
-            try:
-                self._cam.stop_streaming()  # type: ignore
-            except VmbCameraError as e:
-                self.logger.warning(
-                    f"Error stopping stream after snapshot: {type(e).__name__}: {e}"
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"Unexpected error stopping stream: {type(e).__name__}: {e}",
-                    exc_info=True
-                )
+
 
     def _get_feature(self, name: str):
         if not self._cam: return None

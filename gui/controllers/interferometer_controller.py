@@ -1,4 +1,6 @@
-import copy, time
+import copy
+import logging
+import time
 import numpy as np
 from PyQt6.QtCore import QObject
 from PyQt6.QtWidgets import QMessageBox, QFileDialog
@@ -385,7 +387,6 @@ Physics Parameters:
 
     def _show_error(self, msg):
         """Display error to user via console and status bar."""
-        import logging
         logging.getLogger(__name__).error(f"Error: {msg}")
         self.view.controls.lbl_sat.setText("ERROR")
         self.view.controls.lbl_sat.setStyleSheet(
@@ -547,7 +548,6 @@ Physics Parameters:
         try:
             self._save_current_config()
         except Exception as e:
-            import logging
             logging.getLogger(__name__).warning(f"Failed to save config on exit: {e}")
         finally:
             self.model.shutdown()

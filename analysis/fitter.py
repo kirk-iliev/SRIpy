@@ -1,4 +1,5 @@
 import numpy as np
+import logging
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from scipy.ndimage import uniform_filter1d
@@ -25,7 +26,6 @@ class FitResult:
 
 class InterferenceFitter:
     def __init__(self, wavelength: float = 550e-9, slit_separation: float = 0.05, distance: float = 16.5, min_signal: float = 50.0):
-        import logging
         self.logger = logging.getLogger(__name__)
         self.wavelength = wavelength
         self.slit_sep = slit_separation

@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core.acquisition import BurstWorker
+from hardware import CameraDisconnected
 
 
 class CameraCommand(Enum):
@@ -28,6 +29,7 @@ class CameraIoThread(QThread):
     burst_finished = pyqtSignal(object)
     burst_error = pyqtSignal(str)
     error = pyqtSignal(str)
+    camera_disconnected = pyqtSignal()  # Emitted when camera connection is lost
 
     def __init__(self, driver, fitter_burst):
         super().__init__()
@@ -71,6 +73,14 @@ class CameraIoThread(QThread):
                             self.frame_ready.emit(frame)
                     else:
                         self.msleep(1)
+                except CameraDisconnected as e:
+                    self._logger.error(f"Camera disconnected: {e}")
+                    self.camera_disconnected.emit()
+                    self.error.emit(f"Camera disconnected: {e}")
+                    self._live_running = False
+                    self._burst_running = False
+                    self.live_state_changed.emit(False)
+                    self.burst_error.emit(str(e))
                 except Exception as e:
                     self.error.emit(str(e))
                     self._live_running = False

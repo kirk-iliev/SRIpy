@@ -14,6 +14,33 @@ from vmbpy import (
 from typing import cast
 from hardware.camera_interface import CameraInterface
 
+
+# Hardware Exception Classes
+class HardwareException(Exception):
+    """Base exception for hardware-layer errors."""
+    pass
+
+
+class CameraDisconnected(HardwareException):
+    """Camera has been disconnected or is no longer responding."""
+    pass
+
+
+class CameraStreamingError(HardwareException):
+    """Error occurred during frame streaming (buffer starvation, re-queueing, etc)."""
+    pass
+
+
+class FrameAcquisitionTimeout(HardwareException):
+    """Frame acquisition timed out after repeated attempts."""
+    pass
+
+
+class CameraParameterError(HardwareException):
+    """Failed to set camera parameter (exposure, gain, etc)."""
+    pass
+
+
 class MantaDriver(CameraInterface):
 
     def __init__(self, camera_id: Optional[str] = None):
@@ -29,6 +56,11 @@ class MantaDriver(CameraInterface):
         self._stream_lock = threading.Lock()  # Protects streaming state transitions
         self._accepting_frames = False  # Flag to discard in-flight frames during shutdown
         self._operation_lock = threading.Lock()
+
+        # Disconnection Detection: Track consecutive failures to detect hardware loss
+        self._consecutive_timeouts = 0
+        self._consecutive_frame_errors = 0
+        self._disconnection_threshold = 10  # Raise CameraDisconnected after 10 consecutive failures
 
     def connect(self):
         """Initializes Vimba and connects to the camera."""
@@ -293,10 +325,24 @@ class MantaDriver(CameraInterface):
             if frame is None:
                 self.logger.debug(f"Acquire returned None frame (stream stopped)")
                 return None
+
+            # Success: reset failure counters
+            self._reset_failure_counters()
             return frame
 
         except queue.Empty:
             self.logger.debug(f"Acquire timeout after {timeout}s")
+            # Track consecutive timeouts for disconnection detection
+            self._consecutive_timeouts += 1
+            self._consecutive_frame_errors += 1
+
+            if self._consecutive_frame_errors >= self._disconnection_threshold:
+                self.logger.error(
+                    f"Camera disconnection detected: {self._consecutive_frame_errors} consecutive failures"
+                )
+                raise CameraDisconnected(
+                    f"Camera unresponsive after {self._consecutive_frame_errors} consecutive frame acquisition failures"
+                )
             return None
 
         except Exception as e:
@@ -306,6 +352,10 @@ class MantaDriver(CameraInterface):
             )
             raise
 
+    def _reset_failure_counters(self):
+        """Reset failure counters on successful operation."""
+        self._consecutive_timeouts = 0
+        self._consecutive_frame_errors = 0
 
     def _get_feature(self, name: str):
         if not self._cam: return None

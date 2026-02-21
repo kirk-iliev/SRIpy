@@ -71,6 +71,7 @@ class InterferometerController(QObject):
         self.model.live_data_ready.connect(self._update_display)
         self.model.fit_result_ready.connect(self._update_stats)
         self.model.error_occurred.connect(self._show_error)
+        self.model.camera_disconnected.connect(self._handle_camera_disconnect)
         self.model.roi_updated.connect(self._apply_model_roi)
         self.model.saturation_updated.connect(self._update_saturation)
         self.model.background_ready.connect(self._handle_background_ready)
@@ -391,6 +392,22 @@ Physics Parameters:
         self.view.controls.lbl_sat.setText("ERROR")
         self.view.controls.lbl_sat.setStyleSheet(
             "color: white; font-weight: bold; background-color: red;"
+        )
+
+    def _handle_camera_disconnect(self):
+        """Handle camera disconnection event."""
+        logging.getLogger(__name__).critical("Camera disconnected during operation")
+        self.view.controls.lbl_sat.setText("CAMERA DISCONNECTED")
+        self.view.controls.lbl_sat.setStyleSheet(
+            "color: white; font-weight: bold; background-color: darkred;"
+        )
+        # Stop live display
+        if self.model._live_running:
+            self.model.stop_live()
+        QMessageBox.critical(
+            self.view,
+            "Camera Disconnected",
+            "The camera has been disconnected. Please reconnect and restart live streaming.",
         )
 
     def _handle_transpose_toggled(self, checked: bool):

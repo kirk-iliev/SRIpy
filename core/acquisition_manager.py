@@ -51,6 +51,7 @@ class AcquisitionManager(QObject):
     burst_finished = pyqtSignal(object)
     burst_error = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
+    camera_disconnected = pyqtSignal()  # Emitted when hardware detects camera loss
 
     physics_loaded = pyqtSignal(float, float, float) # wavelength, slit, distance
 
@@ -129,6 +130,7 @@ class AcquisitionManager(QObject):
             self.camera_thread.burst_finished.connect(self._handle_burst_finished)
             self.camera_thread.burst_error.connect(self._handle_burst_error)
             self.camera_thread.error.connect(self.error_occurred.emit)
+            self.camera_thread.camera_disconnected.connect(self.camera_disconnected.emit)
             self.camera_thread.start()
 
     def _setup_analysis_thread(self):

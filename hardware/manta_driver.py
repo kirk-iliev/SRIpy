@@ -7,6 +7,7 @@ from vmbpy import (
     VmbSystem,
     Camera,
     Frame,
+    Stream,
     FrameStatus,
     VmbCameraError,
     VmbFeatureError,
@@ -150,7 +151,7 @@ class MantaDriver(CameraInterface):
         if pix_fmt:
             try:
                 available = pix_fmt.get_available_entries()  # type: ignore
-                target_fmt = 'Mono12' if 'Mono12' in available else 'Mono8'
+                target_fmt = 'Mono12' if 'Mono12' in [str(e) for e in available] else 'Mono8'
                 pix_fmt.set(target_fmt)  # type: ignore
             except VmbFeatureError:
                 self.logger.debug("Pixel format set failed")
@@ -210,7 +211,7 @@ class MantaDriver(CameraInterface):
                     self._frame_queue.unfinished_tasks = 0
 
                 # Define the handler inside to capture 'self'
-                def frame_handler(cam: Camera, frame: Frame):
+                def frame_handler(cam: Camera, stream: Stream, frame: Frame):
                     # Check shutdown flag under lock to prevent race condition
                     with self._stream_lock:
                         accepting = self._accepting_frames

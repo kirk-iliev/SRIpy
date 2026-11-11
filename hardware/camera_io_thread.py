@@ -151,12 +151,21 @@ class CameraIoThread(QThread):
                     self._logger.warning(f"Failed to stop stream for background capture: {e}")
                 self._live_running = False
                 self.live_state_changed.emit(False)
+            # acquire_frame() requires an active stream. Start a fresh one
+            # (start_stream clears the frame queue, so we never get a stale
+            # live frame as the background), then restore the prior state.
             try:
+                self._driver.start_stream()
                 frame = self._driver.acquire_frame(timeout=2.0)
                 self.background_ready.emit(frame)
             except Exception as e:
                 self.error.emit(str(e))
                 self.background_ready.emit(None)
+            finally:
+                try:
+                    self._driver.stop_stream()
+                except Exception as e:
+                    self._logger.warning(f"Failed to stop stream after background capture: {e}")
             if was_live:
                 try:
                     self._driver.start_stream()
